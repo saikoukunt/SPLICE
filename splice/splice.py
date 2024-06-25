@@ -2,18 +2,20 @@
 This module defines the SPLICE model.
 
 Classes:
-    splice: SPLICE model.
+    splice_model: SPLICE model.
 """
 
 import copy
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.optim.lr_scheduler import LinearLR
 
-from SPLICE.base import decoder, encoder
+from splice.base import decoder, encoder
 
 
-class splice(nn.Module):
+class splice_model(nn.Module):
     def __init__(
         self,
         n_a,
@@ -54,7 +56,7 @@ class splice(nn.Module):
         ):
             raise ValueError("Hidden layer size must be greater than the latent size.")
 
-        if nShared == 0:
+        if n_shared == 0:
             raise ValueError("Number of shared latents must be greater than 0.")
 
         if msr_scheme not in ["obs", "shared"]:
@@ -67,6 +69,7 @@ class splice(nn.Module):
         self.n_priv_a = n_priv_a
         self.n_priv_b = n_priv_b
         self.msr_scheme = msr_scheme
+        self.layers_msr = layers_msr
 
         # separate encoders generate private and shared latent representations
         self.F_a = encoder(self.n_a, self.n_priv_a, layers) if n_priv_a > 0 else None
@@ -120,7 +123,51 @@ class splice(nn.Module):
         m_a2b = self.M_a2b(z_a) if self.M_a2b is not None else torch.zeros_like(b)
         m_b2a = self.M_b2a(z_b) if self.M_b2a is not None else torch.zeros_like(a)
 
-        return z_a, z_b2a, z_a2b, z_b, m_a2b, m_b2a, a_hat, b_hat
+        return z_a, z_b2a, z_a2b, z_b, m_b2a, m_a2b, a_hat, b_hat
+
+    def freeze_all_except(self, *args):
+        """
+        Freeze all model parameters except those in the specified networks.
+
+        Args:
+            args (nn.Module): Networks to unfreeze.
+        """
+        for param in self.parameters():
+            param.requires_grad = False
+        for net in args:
+            for param in net.parameters():
+                param.requires_grad = True
+
+    def restart_measurement_networks(self, device):
+        """
+        Cold restart the measurement networks.
+
+        Args:
+            device (torch.device): Device on which the model and data are stored.
+
+        Returns:
+            list: Network parameters of the new measurement networks.
+        """
+        if self.msr_scheme == "obs":
+            self.M_b2a = decoder(self.n_priv_b, self.n_a, self.layers_msr).to(device)
+            self.M_a2b = decoder(self.n_priv_a, self.n_b, self.layers_msr).to(device)
+        elif self.msr_scheme == "shared":
+            self.M_b2a = encoder(self.n_priv_b, self.n_shared, self.layers_msr).to(
+                device
+            )
+            self.M_a2b = encoder(self.n_priv_a, self.n_shared, self.layers_msr).to(
+                device
+            )
+        self.M_b2a = self.M_b2a if self.n_priv_b > 0 else None
+        self.M_a2b = self.M_a2b if self.n_priv_a > 0 else None
+
+        msr_params = []
+        if self.M_b2a is not None:
+            msr_params += list(self.M_b2a.parameters())
+        if self.M_a2b is not None:
+            msr_params += list(self.M_a2b.parameters())
+
+        return msr_params
 
     def fit(
         self,
@@ -136,9 +183,9 @@ class splice(nn.Module):
         msr_restart=1000,
         msr_iter_normal=3,
         msr_iter_restart=1000,
-        c_disent=0.1,
+        c_disent=0.05,
+        device=torch.device("cuda"),
     ):
-        # TODO: printing
         """
         Fit the SPLICE model with the Adam optimizer, linear learning rate decay, and no
         batching.
@@ -197,105 +244,88 @@ class splice(nn.Module):
             if verbose:
                 print(f"{epoch}", end="\r")
 
-            # 1) we first train the encoder and decoder networks
-            # a) freeze measurement networks
-            for param in self.parameters():
-                param.requires_grad = True
-            for param in msr_params:
-                param.requires_grad = False
+            # 1) train encoders/decoders to minimize data reconstruction loss
+            self.freeze_all_except(
+                self.F_a, self.F_b, self.F_a2b, self.F_b2a, self.G_a, self.G_b
+            )
 
-            # b) calculate reconstruction and disentangling losses
-            z_a, z_b2a, z_a2b, z_b, m_b2a, m_a2b, a_hat, b_hat = self(a_train, b_train)
-
+            _, _, _, _, _, _, a_hat, b_hat = self(a_train, b_train)
             l_rec_a = F.mse_loss(a_hat, a_train)
             l_rec_b = F.mse_loss(b_hat, b_train)
+            rec_loss = l_rec_a + l_rec_b
 
-            disent_loss = 1
-            if epoch >= disent_start:  # delay start to avoid random gradients
-                # normalize by variance of target variable to make loss scale-invariant
+            optimizer.zero_grad()
+            rec_loss.backward()
+            optimizer.step()
+
+            disent_loss = torch.tensor([1]).to(device)
+            disent_rec_loss = torch.tensor([1]).to(device)
+            msr_loss = torch.tensor([0]).to(device)
+            if epoch >= disent_start:
+
+                # 2) train measurement networks to minimize measurement loss
+                # cold restart periodically to avoid local minima
+                if epoch % msr_restart == 0:
+                    msr_params = self.restart_measurement_networks(device)
+                    msr_optimizer = torch.optim.Adam(msr_params, lr=lr)
+                    msr_iter = msr_iter_restart
+                else:
+                    msr_iter = msr_iter_normal
+
+                self.freeze_all_except(self.M_a2b, self.M_b2a)
+
+                for i in range(msr_iter):
+                    _, _, _, _, m_b2a, m_a2b, a_hat, b_hat = self(a_train, b_train)
+
+                    msr_loss = 0
+                    if self.msr_scheme == "obs":
+                        l_msr_a = F.mse_loss(m_b2a, a_train)
+                        l_msr_b = F.mse_loss(m_a2b, b_train)
+                        # normalize by variance of target variables and # of targets to make loss scale-invariant
+                        l_msr_a *= self.n_a / a_train.var(dim=0).sum()
+                        l_msr_b *= self.n_b / b_train.var(dim=0).sum()
+                    elif self.msr_scheme == "shared":
+                        l_msr_a = F.mse_loss(m_b2a, z_a2b)
+                        l_msr_b = F.mse_loss(m_a2b, z_b2a)
+                        # normalize by variance of target variables and # of targets to make loss scale-invariant
+                        l_msr_a *= self.n_shared / z_a2b.var(dim=0).sum()
+                        l_msr_b *= self.n_shared / z_b2a.var(dim=0).sum()
+                    msr_loss = l_msr_a + l_msr_b  # type: ignore
+
+                    msr_optimizer.zero_grad()
+                    msr_loss.backward()
+                    msr_optimizer.step()
+
+                # 3) train private encoders to minimize disentanglement loss
+                self.freeze_all_except(self.F_a, self.F_b)
+
+                _, z_b2a, z_a2b, _, m_b2a, m_a2b, a_hat, b_hat = self(a_train, b_train)
+
+                l_rec_a = F.mse_loss(a_hat, a_train)
+                l_rec_b = F.mse_loss(b_hat, b_train)
+
+                l_disent_a = 0
+                l_disent_b = 0
+
                 if self.msr_scheme == "obs":
-                    l_disent_a = m_b2a.var(dim=0).sum() / a.var(dim=0).sum()
-                    l_disent_b = m_a2b.var(dim=0).sum() / b.var(dim=0).sum()
+                    l_disent_a = m_b2a.var(dim=0).sum() / a_train.var(dim=0).sum()
+                    l_disent_b = m_a2b.var(dim=0).sum() / b_train.var(dim=0).sum()
                 elif self.msr_scheme == "shared":
                     l_disent_a = m_b2a.var(dim=0).sum() / z_a2b.var(dim=0).sum()
                     l_disent_b = m_a2b.var(dim=0).sum() / z_b2a.var(dim=0).sum()
-                disent_loss = l_disent_a + l_disent_b
+                disent_loss = c_disent * (l_disent_a + l_disent_b)
+                #     disent_rec_loss = l_rec_a + l_rec_b + disent_loss
 
-            step1_loss = l_rec_a + l_rec_b + c_disent + disent_loss
+                optimizer.zero_grad()
+                disent_loss.backward()  # type: ignore
+                optimizer.step()
 
-            # c) backpropagate
-            optimizer.zero_grad()
-            step1_loss.backward()
-            optimizer.step()
-
-            # 2) then we train the measurement networks
-            # a) cold restart measurement networks periodically to avoid local minima
-            if epoch % msr_restart == 0:
-                if msr_scheme == "obs":
-                    self.M_b2a = decoder(self.n_priv_b, self.n_a, layers_msr)
-                    self.M_a2b = decoder(self.n_priv_a, self.n_b, layers_msr)
-                elif msr_scheme == "shared":
-                    self.M_b2a = encoder(self.n_priv_b, self.n_shared, layers_msr)
-                    self.M_a2b = encoder(self.n_priv_a, self.n_shared, layers_msr)
-                self.M_b2a = self.M_b2a if n_priv_b > 0 else None
-                self.M_a2b = self.M_a2b if n_priv_a > 0 else None
-
-                msr_params = []
-                if self.M_b2a is not None:
-                    msr_params += list(self.M_b2a.parameters())
-                if self.M_a2b is not None:
-                    msr_params += list(self.M_a2b.parameters())
-                msr_optimizer = torch.optim.Adam(msr_params, lr=lr)
-                msr_iter = msr_iter_restart
-            else:
-                msr_iter = msr_iter_normal
-
-            # b) unfreeze measurement networks
-            for param in self.parameters():
-                param.requires_grad = False
-            for param in msr_params:
-                param.requires_grad = True
-
-            for i in range(msr_iter):
-                # c) calculate losses
-                z_a, z_b2a, z_a2b, z_b, m_b2a, m_a2b, a_hat, b_hat = self(
-                    a_train, b_train
-                )
-                msr_loss = 0
-
-                # normalize by variance of target variables and # of targets to make loss scale-invariant
-                if self.msr_scheme == "obs":
-                    l_msr_a = (
-                        self.n_a * F.mse_loss(m_b2a, a_train) / a_train.var(dim=0).sum()
-                    )
-                    l_msr_b = (
-                        self.n_b * F.mse_loss(m_a2b, b_train) / b_train.var(dim=0).sum()
-                    )
-                elif self.msr_scheme == "shared":
-                    l_msr_a = (
-                        self.n_shared
-                        * F.mse_loss(m_b2a, z_a2b)
-                        / z_a2b.var(dim=0).sum()
-                    )
-                    l_msr_b = (
-                        self.n_shared
-                        * F.mse_loss(m_a2b, z_b2a)
-                        / z_b2a.var(dim=0).sum()
-                    )
-                msr_loss = l_msr_a + l_msr_b
-
-                # d) backpropagate
-                msr_optimizer.zero_grad()
-                msr_loss.backward()
-                msr_optimizer.step()
-
-            # 3) update learning rate
             scheduler.step()
 
             # 4) save best model + print progress
             if epoch % 500 == 0:
-                if step1_loss.item() < best_loss:
-                    best_loss = step1_loss.item()
+                if rec_loss.item() < best_loss:
+                    best_loss = rec_loss.item()
                     best_params = copy.deepcopy(self.state_dict())
 
                 if verbose:
@@ -307,33 +337,26 @@ class splice(nn.Module):
                     l_rec_b_test = F.mse_loss(b_hat, b_test)
 
                     if self.msr_scheme == "obs":
-                        l_disent_a = m_b2a.var(dim=0).sum() / a.var(dim=0).sum()
-                        l_disent_b = m_a2b.var(dim=0).sum() / b.var(dim=0).sum()
-                        l_msr_a = (
-                            self.n_a
-                            * F.mse_loss(m_b2a, a_train)
-                            / a_train.var(dim=0).sum()
-                        )
-                        l_msr_b = (
-                            self.n_b
-                            * F.mse_loss(m_a2b, b_train)
-                            / b_train.var(dim=0).sum()
-                        )
+                        l_disent_a = m_b2a.var(dim=0).sum() / a_test.var(dim=0).sum()
+                        l_disent_b = m_a2b.var(dim=0).sum() / b_test.var(dim=0).sum()
+
+                        l_msr_a = F.mse_loss(m_b2a, a_test)
+                        l_msr_b = F.mse_loss(m_a2b, b_test)
+                        # normalize by variance of target variables and # of targets to make loss scale-invariant
+                        l_msr_a *= self.n_a / a_test.var(dim=0).sum()
+                        l_msr_b *= self.n_b / b_test.var(dim=0).sum()
                     elif self.msr_scheme == "shared":
                         l_disent_a = m_b2a.var(dim=0).sum() / z_a2b.var(dim=0).sum()
                         l_disent_b = m_a2b.var(dim=0).sum() / z_b2a.var(dim=0).sum()
-                        l_msr_a = (
-                            self.n_shared
-                            * F.mse_loss(m_b2a, z_a2b)
-                            / z_a2b.var(dim=0).sum()
-                        )
-                        l_msr_b = (
-                            self.n_shared
-                            * F.mse_loss(m_a2b, z_b2a)
-                            / z_b2a.var(dim=0).sum()
-                        )
-                    disent_loss_test = l_disent_a + l_disent_b
-                    msr_loss_test = l_msr_a + l_msr_b
+
+                        l_msr_a = F.mse_loss(m_b2a, z_a2b)
+                        l_msr_b = F.mse_loss(m_a2b, z_b2a)
+                        # normalize by variance of target variables and # of targets to make loss scale-invariant
+                        l_msr_a *= self.n_shared / z_a2b.var(dim=0).sum()
+                        l_msr_b *= self.n_shared / z_b2a.var(dim=0).sum()
+
+                    disent_loss_test = l_disent_a + l_disent_b  # type: ignore
+                    msr_loss_test = l_msr_a + l_msr_b  # type: ignore
 
                     print(
                         "Epoch %d \t source loss: %.4f | %.4f \t target loss: %.4f | %.4f \t disent loss: %.4f | %.4f \t msr loss: %.4f | %.4f"
@@ -343,7 +366,7 @@ class splice(nn.Module):
                             l_rec_a_test.item(),
                             l_rec_b.item(),
                             l_rec_b_test.item(),
-                            disent_loss.item(),
+                            disent_loss.item(),  # type: ignore
                             disent_loss_test.item(),
                             msr_loss.item(),
                             msr_loss_test.item(),
