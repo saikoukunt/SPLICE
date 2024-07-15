@@ -10,6 +10,7 @@ Classes:
 """
 
 import numpy as np
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -37,7 +38,7 @@ class encoder(nn.Module):
         layers (ModuleList): List of linear layers.
     """
 
-    def __init__(self, nInputs, nOutputs, layers):
+    def __init__(self, nInputs, nOutputs, layers, nl="carlos"):
         """
         Constructor for the encoder class.
 
@@ -49,6 +50,7 @@ class encoder(nn.Module):
         super(encoder, self).__init__()
         self.nInputs = nInputs
         self.nOutputs = nOutputs
+        self.nl = nl
         self.layers = nn.ModuleList()
 
         self.layers.append(nn.Linear(self.nInputs, layers[0]))
@@ -66,9 +68,14 @@ class encoder(nn.Module):
         Returns:
             Tensor: Output tensor.
         """
-        for layer in self.layers:
-            x = carlosPlus(layer(x))
-        return x
+        if self.nl == "relu":
+            for layer in self.layers:
+                x = F.relu(layer(x))
+            return x
+        else:
+            for layer in self.layers:
+                x = carlosPlus(layer(x))
+            return x
 
 
 class decoder(nn.Module):
@@ -81,7 +88,7 @@ class decoder(nn.Module):
         layers (ModuleList): List of linear layers.
     """
 
-    def __init__(self, nInputs, nOutputs, layers):
+    def __init__(self, nInputs, nOutputs, layers, nl="carlos"):
         """
         Constructor for the decoder class.
 
@@ -94,6 +101,7 @@ class decoder(nn.Module):
 
         self.nInputs = nInputs
         self.nOutputs = nOutputs
+        self.nl = nl
         self.layers = nn.ModuleList()
 
         self.layers.append(nn.Linear(nInputs, layers[0]))
@@ -111,9 +119,11 @@ class decoder(nn.Module):
         Returns:
             Tensor: Output tensor.
         """
-        for i, layer in enumerate(self.layers):
-            if i == len(self.layers) - 1:  # don't apply nonlinearity to last layer
-                x = layer(x)
-            else:
+        if self.nl == "relu":
+            for layer in self.layers:
+                x = F.relu(layer(x))
+            return x
+        else:
+            for layer in self.layers:
                 x = carlosPlus(layer(x))
-        return x
+            return x

@@ -1,2 +1,3 @@
 *.egg-info
 data
+splice/__pycache__/
