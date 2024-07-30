@@ -58,6 +58,13 @@ class encoder(nn.Module):
             self.layers.append(nn.Linear(layers[i], layers[i + 1]))
         self.layers.append(nn.Linear(layers[-1], self.nOutputs))
 
+    #     for layer in self.layers:
+    #         layer.apply(self.init_weights)
+
+    # def init_weights(self, m):
+    #     torch.nn.init.normal_(m.weight, std=np.sqrt(1 / m.in_features))
+    #     torch.nn.init.zeros_(m.bias)
+
     def forward(self, x):
         """
         Forward pass through the encoder network.
@@ -108,6 +115,13 @@ class decoder(nn.Module):
         for i in range(len(layers) - 1):
             self.layers.append(nn.Linear(layers[i], layers[i + 1]))
         self.layers.append(nn.Linear(layers[-1], nOutputs))
+
+    #     for layer in self.layers:
+    #         layer.apply(self.init_weights)
+
+    # def init_weights(self, m):
+    #     torch.nn.init.normal_(m.weight, std=np.sqrt(1 / m.in_features))
+    #     torch.nn.init.zeros_(m.bias)
 
     def forward(self, x):
         """
