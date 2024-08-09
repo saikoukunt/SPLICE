@@ -38,7 +38,7 @@ class encoder(nn.Module):
         layers (ModuleList): List of linear layers.
     """
 
-    def __init__(self, nInputs, nOutputs, layers, nl="carlos"):
+    def __init__(self, nInputs, nOutputs, layers, nl=carlosPlus, conv=False):
         """
         Constructor for the encoder class.
 
@@ -75,14 +75,9 @@ class encoder(nn.Module):
         Returns:
             Tensor: Output tensor.
         """
-        if self.nl == "relu":
-            for layer in self.layers:
-                x = F.relu(layer(x))
-            return x
-        else:
-            for layer in self.layers:
-                x = carlosPlus(layer(x))
-            return x
+        for layer in self.layers:
+            x = self.nl(layer(x))
+        return x
 
 
 class decoder(nn.Module):
@@ -95,7 +90,7 @@ class decoder(nn.Module):
         layers (ModuleList): List of linear layers.
     """
 
-    def __init__(self, nInputs, nOutputs, layers, nl="carlos"):
+    def __init__(self, nInputs, nOutputs, layers, nl=carlosPlus, conv=False):
         """
         Constructor for the decoder class.
 
@@ -133,11 +128,11 @@ class decoder(nn.Module):
         Returns:
             Tensor: Output tensor.
         """
-        if self.nl == "relu":
-            for layer in self.layers:
-                x = F.relu(layer(x))
-            return x
-        else:
-            for layer in self.layers:
-                x = carlosPlus(layer(x))
-            return x
+
+        for i, layer in enumerate(self.layers):
+            if i < len(self.layers) - 1:
+                x = self.nl(layer(x))
+            else:
+                x = layer(x)
+
+        return x
