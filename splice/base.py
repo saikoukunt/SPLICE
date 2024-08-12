@@ -136,3 +136,51 @@ class decoder(nn.Module):
                 x = layer(x)
 
         return x
+
+
+class Flatten3D(nn.Module):
+    def forward(self, x):
+        x = x.view(x.size()[0], -1)
+        return x
+
+
+class Unflatten3D(nn.Module):
+    def forward(self, x):
+        x = x.view(x.size()[0], 32, 7, 7)
+        return x
+
+
+class conv_encoder(nn.Module):
+    def __init__(self, z_dim):
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Conv2d(1, 64, kernel_size=4, stride=2, padding=1),
+            nn.ReLU(True),
+            nn.Conv2d(64, 32, kernel_size=4, stride=2, padding=1),
+            nn.ReLU(True),
+            Flatten3D(),
+            nn.Linear(7 * 7 * 32, 256),
+            nn.ReLU(True),
+            nn.Linear(256, z_dim),
+        )
+
+    def forward(self, x):
+        return self.layers(x)
+
+
+class conv_decoder(nn.Module):
+    def __init__(self, z_dim):
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(z_dim, 256),
+            nn.ReLU(True),
+            nn.Linear(256, 7 * 7 * 32),
+            nn.ReLU(True),
+            Unflatten3D(),
+            nn.ConvTranspose2d(32, 64, kernel_size=4, stride=2, padding=1),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(64, 1, kernel_size=4, stride=2, padding=1),
+        )
+
+    def forward(self, x):
+        return self.layers(x)
