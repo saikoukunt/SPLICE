@@ -4,27 +4,25 @@ from ray.tune.search.hyperopt import HyperOptSearch
 import numpy as np
 from copy import deepcopy
 
-from splice.baseline import DCCAE
+from splice.baseline import Karakasis
 from splice.utils import calculate_mnist_accuracy, update_G
 
 import torch
 
 
-def train_dccae(config):
+def train_karakasis(config):
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    data = np.load(
-        "/cis/home/skoukun1/projects/SPLICE/data/mnist/mnist_rotated_360.npz"
-    )
+    data = np.load("/cis/home/skoukun1/projects/SPLICE/data/mnist/wang_mnist.npz")
 
-    a_train = torch.Tensor(data["original"][:50000]).to(device).reshape(-1, 1, 28, 28)
-    b_train = torch.Tensor(data["rotated"][:50000]).to(device).reshape(-1, 1, 28, 28)
+    a_train = torch.Tensor(data["view1"][:50000]).to(device).reshape(-1, 1, 28, 28)
+    b_train = torch.Tensor(data["view2"][:50000]).to(device).reshape(-1, 1, 28, 28)
 
     a_validation = (
-        torch.Tensor(data["original"][50000:60000]).to(device).reshape(-1, 1, 28, 28)
+        torch.Tensor(data["view1"][50000:60000]).to(device).reshape(-1, 1, 28, 28)
     )
-    b_validation = (
-        torch.Tensor(data["rotated"][50000:60000]).to(device).reshape(-1, 1, 28, 28)
+    b_va    lidation = (
+        torch.Tensor(data["view2"][50000:60000]).to(device).reshape(-1, 1, 28, 28)
     )
 
     # a_test = torch.Tensor(data["view1"][60000:]).to(device).reshape(-1, 1, 28, 28)
@@ -35,7 +33,7 @@ def train_dccae(config):
     accuracy = np.zeros(5)
 
     for rep in range(5):
-        model = DCCAE(
+        model = Karakasis(
             n_a=784,
             n_b=784,
             z_dim=30,
@@ -57,28 +55,26 @@ def train_dccae(config):
 
         while not success and fail_count < 5:
             try:
-                # print("FAIL COUNT %d" % fail_count)
+                G = model.update_G(a_train, b_train, batch_size)
 
                 for epoch in range(num_epochs):
                     print("REP %d EPOCH %d" % (rep, epoch))
                     for i in range(0, a_train.shape[0], batch_size):
                         a_batch = a_train[i : i + batch_size]
                         b_batch = b_train[i : i + batch_size]
+                        g = G[i : i + batch_size]
 
                         a_hat, b_hat, z_a, z_b = model(a_batch, b_batch)
                         loss, cca_loss, recon_loss_a, recon_loss_b = model.loss(
-                            a_batch,
-                            b_batch,
-                            a_hat,
-                            b_hat,
-                            z_a,
-                            z_b,
+                            a_batch, b_batch, a_hat, b_hat, z_a, z_b, g
                         )
 
                         optimizer.zero_grad()
                         loss.backward()
                         optimizer.step()
                         del a_batch, b_batch, a_hat, b_hat, z_a, z_b
+
+                    G = model.update_G(a_train, b_train, batch_size)
 
                     x_a_hat, x_b_hat, z_val_a, z_val_b = model(
                         a_validation, b_validation
@@ -91,6 +87,7 @@ def train_dccae(config):
                         x_b_hat,
                         z_val_a,
                         z_val_b,
+                        (z_val_a + z_val_b) / 2,
                     )
                     if loss < best_loss:
                         best_loss = loss
@@ -139,16 +136,16 @@ def train_dccae(config):
 
 if __name__ == "__main__":
     search_space = {
-        "_lambda": tune.choice([0.001, 0.01, 0.1, 1, 10]),
+        "_lambda": tune.choice([0.001, 0.01, 0.1, 1]),
         "lr": tune.choice([1e-4, 1e-3, 1e-2, 1e-1]),
         "weight_decay": tune.choice([0, 1e-4, 1e-3, 1e-2, 1e-1]),
         "batch_size": tune.choice([100, 200, 500, 800, 1000]),
     }
 
     results = tune.run(
-        train_dccae,
+        train_karakasis,
         resources_per_trial={"cpu": 1, "gpu": 1},
-        num_samples=200,
+        num_samples=30,
         search_alg=HyperOptSearch(search_space, metric="accuracy", mode="max"),
     )
 

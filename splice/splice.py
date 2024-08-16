@@ -17,7 +17,70 @@ from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import NearestNeighbors
 from torch.optim.lr_scheduler import LinearLR
 
-from splice.base import decoder, encoder
+from splice.base import decoder, encoder, conv_decoder, conv_encoder
+
+
+class ConvSplice(nn.Module):
+    def __init__(self, n_shared, n_priv_b, device):
+        super().__init__()
+        self.n_shared = n_shared
+        self.n_priv_b = n_priv_b
+
+        # self.F_a = conv_encoder(z_dim).to(device)
+        self.F_a2b = conv_encoder(n_shared).to(device)
+        self.F_b2a = conv_encoder(n_shared).to(device)
+        self.F_b = conv_encoder(n_priv_b).to(device)
+
+        self.G_a = conv_decoder(n_shared).to(device)
+        self.G_b = conv_decoder(n_shared + n_priv_b).to(device)
+
+        self.M_b2a = conv_decoder(n_priv_b).to(device)
+
+    def forward(self, a, b):
+        z_b2a = self.F_b2a(b)
+        z_a2b = self.F_a2b(a)
+        z_b = self.F_b(b)
+
+        a_hat = self.G_a(z_a2b)
+        b_hat = self.G_b(torch.hstack((z_b2a, z_b)))
+
+        m_b2a = self.M_b2a(z_b)
+
+        return z_b2a, z_a2b, z_b, m_b2a, a_hat, b_hat
+
+    def measure(self, b):
+        z_b = self.F_b(b)
+
+        m_b2a = self.M_b2a(z_b)
+
+        return z_b, m_b2a
+
+    def freeze_all_except(self, *args):
+        """
+        Freeze all model parameters except those in the specified networks.
+
+        Args:
+            args (nn.Module): Networks to unfreeze.
+        """
+        for param in self.parameters():
+            param.requires_grad = False
+        for net in args:
+            for param in net.parameters():
+                param.requires_grad = True
+
+    def restart_measurement_networks(self, device):
+        """
+        Cold restart the measurement networks.
+
+        Args:
+            device (torch.device): Device on which the model and data are stored.
+
+        Returns:
+            list: Network parameters of the new measurement networks.
+        """
+        self.M_b2a = conv_decoder(self.n_priv_b).to(device)
+
+        return self.M_b2a.parameters()
 
 
 class splice_model(nn.Module):
@@ -337,40 +400,41 @@ class splice_model(nn.Module):
 
             # 4) save best model + print progress
             if epoch % 500 == 0:
-                if rec_loss.item() < best_loss:
-                    best_loss = rec_loss.item()
+                z_a, z_b2a, z_a2b, z_b, m_b2a, m_a2b, a_hat, b_hat = self(
+                    a_test, b_test
+                )
+
+                l_rec_a_test = F.mse_loss(a_hat, a_test)
+                l_rec_b_test = F.mse_loss(b_hat, b_test)
+
+                if self.msr_scheme == "obs":
+                    l_disent_a = m_b2a.var(dim=0).sum() / a_test.var(dim=0).sum()
+                    l_disent_b = m_a2b.var(dim=0).sum() / b_test.var(dim=0).sum()
+
+                    l_msr_a = F.mse_loss(m_b2a, a_test)
+                    l_msr_b = F.mse_loss(m_a2b, b_test)
+                    # normalize by variance of target variables and # of targets to make loss scale-invariant
+                    l_msr_a *= self.n_a / a_test.var(dim=0).sum()
+                    l_msr_b *= self.n_b / b_test.var(dim=0).sum()
+                elif self.msr_scheme == "shared":
+                    l_disent_a = m_b2a.var(dim=0).sum() / z_a2b.var(dim=0).sum()
+                    l_disent_b = m_a2b.var(dim=0).sum() / z_b2a.var(dim=0).sum()
+
+                    l_msr_a = F.mse_loss(m_b2a, z_a2b)
+                    l_msr_b = F.mse_loss(m_a2b, z_b2a)
+                    # normalize by variance of target variables and # of targets to make loss scale-invariant
+                    l_msr_a *= self.n_shared / z_a2b.var(dim=0).sum()
+                    l_msr_b *= self.n_shared / z_b2a.var(dim=0).sum()
+
+                disent_loss_test = l_disent_a + l_disent_b  # type: ignore
+                msr_loss_test = l_msr_a + l_msr_b  # type: ignore
+
+                loss = l_rec_a_test + l_rec_b_test + c_disent * disent_loss_test
+                if loss.item() < best_loss:
+                    best_loss = loss.item()
                     best_params = copy.deepcopy(self.state_dict())
 
                 if verbose:
-                    z_a, z_b2a, z_a2b, z_b, m_b2a, m_a2b, a_hat, b_hat = self(
-                        a_test, b_test
-                    )
-
-                    l_rec_a_test = F.mse_loss(a_hat, a_test)
-                    l_rec_b_test = F.mse_loss(b_hat, b_test)
-
-                    if self.msr_scheme == "obs":
-                        l_disent_a = m_b2a.var(dim=0).sum() / a_test.var(dim=0).sum()
-                        l_disent_b = m_a2b.var(dim=0).sum() / b_test.var(dim=0).sum()
-
-                        l_msr_a = F.mse_loss(m_b2a, a_test)
-                        l_msr_b = F.mse_loss(m_a2b, b_test)
-                        # normalize by variance of target variables and # of targets to make loss scale-invariant
-                        l_msr_a *= self.n_a / a_test.var(dim=0).sum()
-                        l_msr_b *= self.n_b / b_test.var(dim=0).sum()
-                    elif self.msr_scheme == "shared":
-                        l_disent_a = m_b2a.var(dim=0).sum() / z_a2b.var(dim=0).sum()
-                        l_disent_b = m_a2b.var(dim=0).sum() / z_b2a.var(dim=0).sum()
-
-                        l_msr_a = F.mse_loss(m_b2a, z_a2b)
-                        l_msr_b = F.mse_loss(m_a2b, z_b2a)
-                        # normalize by variance of target variables and # of targets to make loss scale-invariant
-                        l_msr_a *= self.n_shared / z_a2b.var(dim=0).sum()
-                        l_msr_b *= self.n_shared / z_b2a.var(dim=0).sum()
-
-                    disent_loss_test = l_disent_a + l_disent_b  # type: ignore
-                    msr_loss_test = l_msr_a + l_msr_b  # type: ignore
-
                     print(
                         "Epoch %d \t source loss: %.4f | %.4f \t target loss: %.4f | %.4f \t disent loss: %.4f | %.4f \t msr loss: %.4f | %.4f"
                         % (

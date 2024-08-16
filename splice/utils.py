@@ -9,6 +9,19 @@ from scipy.optimize import linear_sum_assignment
 import torch
 
 
+def update_G(x_a, x_b, model, batch_size):
+    with torch.no_grad():
+        a_hat, b_hat, z_a, z_b = model(x_a, x_b)
+        Y = z_a + z_b
+
+        # Ensure Y is zero mean
+        Y = Y - torch.mean(Y, axis=0)  # type: ignore
+        G, S, Vh = torch.linalg.svd(Y, full_matrices=False)
+        G = G @ Vh
+        G = np.sqrt(batch_size) * G
+    return G
+
+
 def calculate_mnist_accuracy(true_labels, z_train, z_validation):
 
     # do spectral clustering
