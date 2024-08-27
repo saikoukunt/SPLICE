@@ -4,6 +4,7 @@ from ray.tune.search.hyperopt import HyperOptSearch
 import numpy as np
 from copy import deepcopy
 
+
 from splice.baseline import DCCA
 from splice.utils import calculate_mnist_accuracy
 
@@ -11,6 +12,9 @@ import torch
 
 
 def train_dcca(config):
+    import warnings
+
+    warnings.filterwarnings("error")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     data = np.load(
@@ -32,6 +36,7 @@ def train_dcca(config):
 
     labels = data["labels"]
 
+    cost = np.zeros(5)
     accuracy = np.zeros(5)
 
     for rep in range(5):
@@ -111,20 +116,21 @@ def train_dcca(config):
                     labels[50000:60000], z_train_b, z_val_b.detach().cpu().numpy()
                 )
 
-                # print("FINISHED")
-                accuracy[rep] = max(a_acc, b_acc)
-                print(accuracy[rep])
+                print("FINISHED")
+                cost[rep] = best_loss
+                accuracy[rep] = (a_acc + b_acc) / 2
+                print(cost[rep])
                 success = True
 
             except Exception as e:
                 print(e)
                 fail_count += 1
                 if fail_count == 5:
-                    return {"accuracy": 0}
+                    return {"cost": np.inf, "accuracy": 0}
 
                 continue
 
-    return {"accuracy": np.mean(accuracy)}
+    return {"cost": np.mean(cost), "accuracy": np.mean(accuracy)}
 
 
 if __name__ == "__main__":
@@ -138,10 +144,10 @@ if __name__ == "__main__":
         train_dcca,
         resources_per_trial={"cpu": 1, "gpu": 1},
         num_samples=30,
-        search_alg=HyperOptSearch(search_space, metric="accuracy", mode="max"),
+        search_alg=HyperOptSearch(search_space, metric="cost", mode="min"),
     )
 
     print(
         "Best hyperparameters found were: ",
-        results.get_best_trial("accuracy", "max", "last").last_result,
+        results.get_best_trial("cost", "min", "last").last_result,
     )

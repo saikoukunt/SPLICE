@@ -149,17 +149,31 @@ class DCCAE(nn.Module):
 
         return x_a_hat, x_b_hat, z_a, z_b
 
-    def loss(self, x_a, x_b, a_hat, b_hat, z_a, z_b):
-        cca_loss = self.cca_loss(z_a, z_b)
-        recon_loss_a = torch.mean((x_a - a_hat) ** 2)
-        recon_loss_b = torch.mean((x_b - b_hat) ** 2)
+    def loss(self, x_a, x_b, a_hat, b_hat, z_a, z_b, g):
+        mse = nn.MSELoss()
+        cca_loss = (mse(z_a, g) + mse(z_b, g)) / 2
+        recon_loss_a = mse(x_a, a_hat)
+        recon_loss_b = mse(x_b, b_hat)
 
         return (
-            cca_loss + self._lambda * (recon_loss_a + recon_loss_b),
+            (1 - self._lambda) * cca_loss
+            + self._lambda * (recon_loss_a + recon_loss_b) / 2,
             cca_loss,
             recon_loss_a,
             recon_loss_b,
         )
+
+    def update_G(self, x_a, x_b, batch_size):
+        with torch.no_grad():
+            a_hat, b_hat, z_a, z_b = self(x_a, x_b)
+            Y = z_a + z_b
+
+            Y = Y - torch.mean(Y, axis=0)  # type: ignore
+            G, S, Vh = torch.linalg.svd(Y, full_matrices=False)
+            G = G @ Vh
+            G = np.sqrt(batch_size) * G
+
+        return G
 
 
 class cca_loss:

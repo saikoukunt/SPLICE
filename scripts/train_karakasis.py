@@ -8,21 +8,27 @@ from splice.baseline import Karakasis
 from splice.utils import calculate_mnist_accuracy, update_G
 
 import torch
+import torch.nn.functional as F
 
 
 def train_karakasis(config):
+    import warnings
+
+    warnings.filterwarnings("error")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    data = np.load("/cis/home/skoukun1/projects/SPLICE/data/mnist/wang_mnist.npz")
+    data = np.load(
+        "/cis/home/skoukun1/projects/SPLICE/data/mnist/mnist_rotated_360.npz"
+    )
 
-    a_train = torch.Tensor(data["view1"][:50000]).to(device).reshape(-1, 1, 28, 28)
-    b_train = torch.Tensor(data["view2"][:50000]).to(device).reshape(-1, 1, 28, 28)
+    a_train = torch.Tensor(data["original"][:50000]).to(device).reshape(-1, 1, 28, 28)
+    b_train = torch.Tensor(data["rotated"][:50000]).to(device).reshape(-1, 1, 28, 28)
 
     a_validation = (
-        torch.Tensor(data["view1"][50000:60000]).to(device).reshape(-1, 1, 28, 28)
+        torch.Tensor(data["original"][50000:60000]).to(device).reshape(-1, 1, 28, 28)
     )
-    b_va    lidation = (
-        torch.Tensor(data["view2"][50000:60000]).to(device).reshape(-1, 1, 28, 28)
+    b_validation = (
+        torch.Tensor(data["rotated"][50000:60000]).to(device).reshape(-1, 1, 28, 28)
     )
 
     # a_test = torch.Tensor(data["view1"][60000:]).to(device).reshape(-1, 1, 28, 28)
@@ -30,7 +36,9 @@ def train_karakasis(config):
 
     labels = data["labels"]
 
+    cost = np.zeros(5)
     accuracy = np.zeros(5)
+    recon_loss = np.zeros(5)
 
     for rep in range(5):
         model = Karakasis(
@@ -38,7 +46,7 @@ def train_karakasis(config):
             n_b=784,
             z_dim=30,
             device=device,
-            _lambda=config["_lambda"],
+            _lambda=0.1,
             conv=True,
         ).to(device)
 
@@ -119,7 +127,13 @@ def train_karakasis(config):
                 )
 
                 # print("FINISHED")
+                cost[rep] = best_loss
                 accuracy[rep] = max(a_acc, b_acc)
+                recon_loss[rep] = (
+                    F.mse_loss(x_a_hat, a_validation).item()
+                    + F.mse_loss(x_b_hat, b_validation).item()
+                )
+
                 print(accuracy[rep])
                 success = True
 
@@ -127,16 +141,20 @@ def train_karakasis(config):
                 print(e)
                 fail_count += 1
                 if fail_count == 5:
-                    return {"accuracy": 0}
+                    return {"cost": np.inf, "accuracy": 0}
 
                 continue
 
-    return {"accuracy": np.mean(accuracy)}
+    return {
+        "cost": np.mean(cost),
+        "accuracy": np.mean(accuracy),
+        "recon_loss": np.mean(recon_loss),
+    }
 
 
 if __name__ == "__main__":
     search_space = {
-        "_lambda": tune.choice([0.001, 0.01, 0.1, 1]),
+        # "_lambda": tune.choice([0.001, 0.01, 0.1, 1]),
         "lr": tune.choice([1e-4, 1e-3, 1e-2, 1e-1]),
         "weight_decay": tune.choice([0, 1e-4, 1e-3, 1e-2, 1e-1]),
         "batch_size": tune.choice([100, 200, 500, 800, 1000]),
@@ -145,11 +163,11 @@ if __name__ == "__main__":
     results = tune.run(
         train_karakasis,
         resources_per_trial={"cpu": 1, "gpu": 1},
-        num_samples=30,
-        search_alg=HyperOptSearch(search_space, metric="accuracy", mode="max"),
+        num_samples=10,
+        search_alg=HyperOptSearch(search_space, metric="cost", mode="min"),
     )
 
     print(
         "Best hyperparameters found were: ",
-        results.get_best_trial("accuracy", "max", "last").last_result,
+        results.get_best_trial("cost", "min", "last").last_result,
     )
