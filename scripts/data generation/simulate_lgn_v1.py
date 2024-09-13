@@ -10,8 +10,6 @@ from sklearn.model_selection import train_test_split
 from torch import Tensor
 from torch.utils.data import Dataset
 
-# TODO: figure out the appropriate c to make unshared variance 3x shared
-
 
 def make_stim(x, y, theta, width=30, height=10, grid_width=100, grid_height=100):
     """
@@ -51,11 +49,6 @@ def make_stim(x, y, theta, width=30, height=10, grid_width=100, grid_height=100)
     grid[x - xrad : x - xrad + stim.shape[0], y - yrad : y - yrad + stim.shape[1]] = (
         stim
     )
-
-    # downsample so we can calculate responses using inner product with 20x20 RFs
-    # stimulus = grid.reshape(20, int(grid_width / 2), 20, int(grid_height / 2)).mean(
-    #     axis=(1, 3)
-    # )
 
     return grid
 
