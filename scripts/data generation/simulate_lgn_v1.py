@@ -332,18 +332,25 @@ if __name__ == "__main__":
 
     train, test, field_params = generate_sim(sampling=sampling, num_samples=num_samples)
 
-    os.makedirs(os.path.join("..", "data", file_desc), exist_ok=True)
+    os.makedirs(os.path.join("..", "..", "data", file_desc), exist_ok=True)
     pickle.dump(
         train,
-        open(os.path.join("..", "data", file_desc, f"{file_desc}_train.pkl"), "wb"),
+        open(
+            os.path.join("..", "..", "data", file_desc, f"{file_desc}_train.pkl"), "wb"
+        ),
     )
     pickle.dump(
         test,
-        open(os.path.join("..", "data", file_desc, f"{file_desc}_test.pkl"), "wb"),
+        open(
+            os.path.join("..", "..", "data", file_desc, f"{file_desc}_test.pkl"), "wb"
+        ),
     )
     pickle.dump(
         field_params,
         open(
-            os.path.join("..", "data", file_desc, f"{file_desc}_field_params.pkl"), "wb"
+            os.path.join(
+                "..", "..", "data", file_desc, f"{file_desc}_field_params.pkl"
+            ),
+            "wb",
         ),
     )

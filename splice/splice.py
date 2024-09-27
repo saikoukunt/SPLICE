@@ -94,7 +94,6 @@ class splice_model(nn.Module):
         layers_enc,
         layers_dec,
         layers_msr,
-        msr_scheme="obs",
     ):
         """
         The SPLICE model.
@@ -155,12 +154,9 @@ class splice_model(nn.Module):
         self.G_b = decoder(self.n_priv_b + self.n_shared, self.n_b, layers_dec)
 
         # measurement networks predict opposite datasets or shared latents
-        if msr_scheme == "obs":
-            self.M_a2b = decoder(self.n_priv_a, self.n_b, layers_msr)
-            self.M_b2a = decoder(self.n_priv_b, self.n_a, layers_msr)
-        elif msr_scheme == "shared":
-            self.M_a2b = encoder(self.n_priv_a, self.n_shared, layers_msr)
-            self.M_b2a = encoder(self.n_priv_b, self.n_shared, layers_msr)
+        self.M_a2b = decoder(self.n_priv_a, self.n_b, layers_msr)
+        self.M_b2a = decoder(self.n_priv_b, self.n_a, layers_msr)
+
         self.M_a2b = self.M_a2b if n_priv_a > 0 else None
         self.M_b2a = self.M_b2a if n_priv_b > 0 else None
 
