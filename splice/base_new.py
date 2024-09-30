@@ -47,6 +47,9 @@ class encoder(nn.Module):
             nOutputs (int): Number of output features.
             layers (list): Hidden layer sizes.
         """
+        if nInputs == 0 or nOutputs == 0:
+            return None
+
         super(encoder, self).__init__()
         self.nInputs = nInputs
         self.nOutputs = nOutputs
@@ -92,6 +95,9 @@ class decoder(nn.Module):
             nOutputs (int): Number of output features.
             layers (_type_): Hidden layer sizes.
         """
+        if nInputs == 0 or nOutputs == 0:
+            return None
+
         super(decoder, self).__init__()
 
         self.nInputs = nInputs
@@ -131,42 +137,75 @@ class Flatten3D(nn.Module):
 
 
 class Unflatten3D(nn.Module):
+    def __init__(self, size):
+        super(Unflatten3D, self).__init__()
+        self.size = size
+
     def forward(self, x):
-        x = x.view(x.size()[0], 32, 7, 7)
+        x = x.view(x.size()[0], self.size[0], self.size[1], self.size[2])
         return x
 
 
 class conv_encoder(nn.Module):
-    def __init__(self, z_dim):
+    def __init__(self, z_dim, convLayers, fcLayers, nl=nn.ReLU):
+        if z_dim == 0:
+            return None
+
         super().__init__()
-        self.layers = nn.Sequential(
-            nn.Conv2d(1, 64, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(True),
-            nn.Conv2d(64, 32, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(True),
-            Flatten3D(),
-            nn.Linear(7 * 7 * 32, 256),
-            nn.ReLU(True),
-            nn.Linear(256, z_dim),
-        )
+        self.layers = nn.Sequential()
+
+        for layer in convLayers:
+            self.layers.append(
+                nn.Conv2d(
+                    layer["in_channels"],
+                    layer["out_channels"],
+                    layer["kernel_size"],
+                    layer["stride"],
+                    layer["padding"],
+                )
+            )
+            self.layers.append(nl(True))
+
+        self.layers.append(Flatten3D())
+
+        for i in range(len(fcLayers) - 1):
+            self.layers.append(nn.Linear(fcLayers[i], fcLayers[i + 1]))
+            self.layers.append(nl(True))
+
+        self.layers.append(nn.Linear(fcLayers[-1], z_dim))
 
     def forward(self, x):
         return self.layers(x)
 
 
 class conv_decoder(nn.Module):
-    def __init__(self, z_dim):
+    def __init__(self, z_dim, fcLayers, convLayers, nl=nn.ReLU):
+        if z_dim == 0:
+            return None
+
         super().__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(z_dim, 256),
-            nn.ReLU(True),
-            nn.Linear(256, 7 * 7 * 32),
-            nn.ReLU(True),
-            Unflatten3D(),
-            nn.ConvTranspose2d(32, 64, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(True),
-            nn.ConvTranspose2d(64, 1, kernel_size=4, stride=2, padding=1),
-        )
+        self.layers = nn.Sequential()
+
+        self.layers.append(nn.Linear(z_dim, fcLayers[0]))
+        self.layers.append(nl(True))
+        for i in range(len(fcLayers) - 1):
+            self.layers.append(nn.Linear(fcLayers[i], fcLayers[i + 1]))
+            self.layers.append(nl(True))
+
+        self.layers.append(Unflatten3D(convLayers[0]["size"]))
+
+        for layer in reversed(convLayers):
+            self.layers.append(nl(True))
+            self.layers.append(
+                nn.ConvTranspose2d(
+                    layer["in_channels"],
+                    layer["out_channels"],
+                    layer["kernel_size"],
+                    layer["stride"],
+                    layer["padding"],
+                )
+            )
+        self.layers.pop(0)
 
     def forward(self, x):
         return self.layers(x)
