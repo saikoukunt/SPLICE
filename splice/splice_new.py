@@ -11,7 +11,7 @@ from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import NearestNeighbors
 from torch.optim.lr_scheduler import LinearLR
 
-from splice.base import carlosPlus, decoder, encoder, conv_decoder, conv_encoder
+from splice.base_new import carlosPlus, decoder, encoder, conv_decoder, conv_encoder
 from splice.utils import calculate_isomap_dists, iso_loss_func
 
 
@@ -51,10 +51,10 @@ class SPLICECore(nn.Module):
         return z_a, z_b2a, z_a2b, z_b, a_hat, b_hat
 
     def encode(self, x_a, x_b):
-        z_a = self.F_a(x_a) if self.F_a is not None else None
+        z_a = self.F_a(x_a) 
         z_a2b = self.F_a2b(x_a)
         z_b2a = self.F_b2a(x_b)
-        z_b = self.F_b(x_b) if self.F_b is not None else None
+        z_b = self.F_b(x_b)
 
         return z_a, z_b2a, z_a2b, z_b
 
@@ -87,23 +87,24 @@ class SPLICE(SPLICECore):
         super().__init__(
             n_a, n_b, n_shared, n_priv_a, n_priv_b, layers_enc, layers_dec, nl
         )
+        if n_shared == 0:
+            raise ValueError("Shared dimensionality cannot be 0.")
+
         self.layers_msr = layers_msr
-        if n_priv_a > 0:
-            self.M_a2b = decoder(n_priv_a, n_b, layers_msr, nl)
-        if n_priv_b > 0:
-            self.M_b2a = decoder(n_priv_b, n_a, layers_msr, nl)
+        self.M_a2b = decoder(n_priv_a, n_b, layers_msr, nl)
+        self.M_b2a = decoder(n_priv_b, n_a, layers_msr, nl)
 
     def forward(self, x_a, x_b):
-        z_a, z_b2a, z_a2b, z_b, a_hat, b_hat = super()(x_a, x_b)
-        m_a2b = self.M_a2b(z_a) if self.n_priv_a > 0 else None
-        m_b2a = self.M_b2a(z_b) if self.n_priv_b > 0 else None
+        z_a, z_b2a, z_a2b, z_b, a_hat, b_hat = super().forward(x_a, x_b)
+        m_a2b = self.M_a2b(z_a) 
+        m_b2a = self.M_b2a(z_b)
 
         return z_a, z_b2a, z_a2b, z_b, m_a2b, m_b2a, a_hat, b_hat
 
     def measure(self, x_a, x_b):
         z_a, z_b2a, z_a2b, z_b = self.encode(x_a, x_b)
-        m_a2b = self.M_a2b(z_a) if self.M_a2b is not None else None
-        m_b2a = self.M_b2a(z_b) if self.M_b2a is not None else None
+        m_a2b = self.M_a2b(z_a) 
+        m_b2a = self.M_b2a(z_b) 
 
         return z_a, z_b2a, z_a2b, z_b, m_a2b, m_b2a
 
@@ -202,8 +203,8 @@ class SPLICE(SPLICECore):
 
                         _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
 
-                        l_msr_a = F.mse_loss(m_a2b, b_batch) if self.M_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
-                        l_msr_b = F.mse_loss(m_b2a, a_batch) if self.M_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
+                        l_msr_a = F.mse_loss(m_a2b, b_batch) if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
+                        l_msr_b = F.mse_loss(m_b2a, a_batch) if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
                         # normalize by variance of target variables and # of targets to make loss scale-invariant
                         l_msr_a *= self.n_b / b_batch.var(dim=0).sum()
                         l_msr_b *= self.n_a / a_batch.var(dim=0).sum()
@@ -225,8 +226,8 @@ class SPLICE(SPLICECore):
 
                     _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
 
-                    l_disent_a = m_a2b.var(dim=0).sum() / b_batch.var(dim=0).sum() if self.M_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
-                    l_disent_b = m_b2a.var(dim=0).sum() / a_batch.var(dim=0).sum() if self.M_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
+                    l_disent_a = m_a2b.var(dim=0).sum() / b_batch.var(dim=0).sum() if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
+                    l_disent_b = m_b2a.var(dim=0).sum() / a_batch.var(dim=0).sum() if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
 
                     disentangle_loss = c_disent * (l_disent_a + l_disent_b)
                     cumulative_disentangle_loss += disentangle_loss.item()
@@ -251,13 +252,15 @@ class SPLICE(SPLICECore):
 
                     test_reconstruction_loss_a = F.mse_loss(a_hat, a_test)
                     test_reconstruction_loss_b = F.mse_loss(b_hat, b_test)
-                    test_disentangle_loss = (
-                        m_a2b.var(dim=0).sum() + m_b2a.var(dim=0).sum()
-                    )
-                    test_measurement_loss = (
-                        self.n_b * F.mse_loss(m_a2b, b_test) / b_test.var(dim=0).sum()
-                        + self.n_a * F.mse_loss(m_b2a, a_test) / a_test.var(dim=0).sum()
-                    )
+
+                    test_disent_a = m_a2b.var(dim=0).sum()/b_test.var(dim=0).sum() if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
+                    test_disent_b = m_b2a.var(dim=0).sum()/a_test.var(dim=0).sum() if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
+                    test_disentangle_loss = test_disent_a + test_disent_b
+
+                    test_msr_a = F.mse_loss(m_a2b, b_test) / b_test.var(dim=0).sum() if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
+                    test_msr_b = F.mse_loss(m_b2a, a_test) / a_test.var(dim=0).sum() if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
+
+                    test_measurement_loss = test_msr_a + test_msr_b
 
                     print(
                         "Epoch: %d \t A reconstruction: %.4f | %.4f \t B reconstruction: %.4f | %.4f \t Disentangling: %.4f | %.4f \t Measurement: %.4f | %.4f"
@@ -267,7 +270,7 @@ class SPLICE(SPLICECore):
                             test_reconstruction_loss_a.item(),
                             cumulative_l_rec_b / n_batches,
                             test_reconstruction_loss_b.item(),
-                            c_disent * cumulative_disentangle_loss / n_batches,
+                            cumulative_disentangle_loss / n_batches/ c_disent,
                             test_disentangle_loss.item(),
                             cumulative_measurement_loss / n_batches,
                             test_measurement_loss.item(),
