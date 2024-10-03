@@ -32,7 +32,7 @@ def rot_digit(m, restricted_rotations=True):
     and returns it flattened into (28*28,) shape
     """
     if restricted_rotations:
-        angle = np.random.rand() * 45 - 45
+        angle = np.random.rand() * 2 * 45 - 45
     else:
         angle = np.random.rand() * 360  # will lead to ambiguities because "6" = "9"
 
