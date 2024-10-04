@@ -59,7 +59,7 @@ def get_dataloader(view1, view2, batchsize, shuffle):
 def train_dmvae(config):
     n_shared = 30
     n_privateA = 0
-    n_privateB = 2
+    n_privateB = 3
     batch_size = config["batch_size"]
     epochs = 50
     lr = config["lr"]
@@ -149,26 +149,16 @@ def train_dmvae(config):
     BETA2 = (1.0, beta2, 1.0)
 
     data = np.load(
-        "/cis/home/skoukun1/projects/SPLICE/data/mnist/mnist_rotated_360.npz"
+        r"C:\Users\Harris_Lab\Projects\SPLICE\data\mnist\mnist_rotated_360.npz"
     )
 
-    X = torch.Tensor(data["original"][:50000]).to(device).reshape(-1, 1, 28, 28) / 255
-    Y = torch.Tensor(data["rotated"][:50000]).to(device).reshape(-1, 1, 28, 28) / 255
-
-    Y[Y > 1] = 1
-    Y[Y < 0] = 0
+    X = torch.Tensor(data["original"][:50000]).to(device).reshape(-1, 1, 28, 28)
+    Y = torch.Tensor(data["rotated"][:50000]).to(device).reshape(-1, 1, 28, 28)
 
     X_val = (
         torch.Tensor(data["original"][50000:60000]).to(device).reshape(-1, 1, 28, 28)
-        / 255
     )
-    Y_val = (
-        torch.Tensor(data["rotated"][50000:60000]).to(device).reshape(-1, 1, 28, 28)
-        / 255
-    )
-
-    Y_val[Y_val > 1] = 1
-    Y_val[Y_val < 0] = 0
+    Y_val = torch.Tensor(data["rotated"][50000:60000]).to(device).reshape(-1, 1, 28, 28)
 
     dataset = ViewDataset(X[:50000], Y[:50000])
     val_dataset = ViewDataset(X_val, Y_val)

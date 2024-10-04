@@ -71,7 +71,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n_privateB",
         type=int,
-        default=2,
+        default=10,
         help="size of the latent embedding of private",
     )
     parser.add_argument(
@@ -217,11 +217,10 @@ if len(args.run_desc) > 1:
 BETA1 = (1.0, args.beta1, 1.0)
 BETA2 = (1.0, args.beta2, 1.0)
 
-data = np.load("/cis/home/skoukun1/projects/SPLICE/data/mnist/mnist_rotated_360.npz")
+data = np.load(r"C:\Users\Harris_Lab\Projects\SPLICE\data\mnist\mnist_rotated_360.npz")
 
 X = torch.Tensor(data["original"][:50000]).to(device).reshape(-1, 1, 28, 28)
 Y = torch.Tensor(data["rotated"][:50000]).to(device).reshape(-1, 1, 28, 28)
-
 
 X_val = torch.Tensor(data["original"][50000:60000]).to(device).reshape(-1, 1, 28, 28)
 Y_val = torch.Tensor(data["rotated"][50000:60000]).to(device).reshape(-1, 1, 28, 28)
@@ -267,7 +266,7 @@ optimizer = torch.optim.Adam(
     + list(encA.parameters())
     + list(decA.parameters()),
     lr=args.lr,
-    weight_decay=0,
+    weight_decay=1e-2,
 )
 
 
@@ -481,7 +480,7 @@ def save_ckpt():
     )
     torch.save(
         encB.state_dict(),
-        "%s/%s-encB"
+        "%s/%s-encB.rar"
         % (
             args.ckpt_path,
             MODEL_NAME,
@@ -489,7 +488,7 @@ def save_ckpt():
     )
     torch.save(
         decB.state_dict(),
-        "%s/%s-decB"
+        "%s/%s-decB.rar"
         % (
             args.ckpt_path,
             MODEL_NAME,
