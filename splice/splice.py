@@ -580,7 +580,7 @@ class splice_model(nn.Module):
             l_rec_b, mse_rec_b, prox_shared_b = iso_loss_func(
                 b_train, b_hat, z_a2b, b_shared_dists, landmark_inds
             )
-            l_rec_a, mse_rec_b, prox_private_a = iso_loss_func(
+            l_rec_a, mse_rec_a, prox_private_a = iso_loss_func(
                 a_train, a_hat, z_a, a_private_dists, landmark_inds
             )
             l_rec_b, mse_rec_b, prox_private_b = iso_loss_func(

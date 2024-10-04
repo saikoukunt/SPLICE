@@ -1,12 +1,11 @@
 import numpy as np
-from sklearn.neighbors import NearestNeighbors
-from sklearn.cluster import KMeans
-from sklearn.metrics import confusion_matrix
+import torch
+from scipy.optimize import linear_sum_assignment
 from scipy.sparse import lil_array
 from scipy.sparse.csgraph import dijkstra
-from scipy.optimize import linear_sum_assignment
-
-import torch
+from sklearn.cluster import KMeans
+from sklearn.metrics import confusion_matrix
+from sklearn.neighbors import NearestNeighbors
 
 
 def update_G(x_a, x_b, model, batch_size):
@@ -41,6 +40,11 @@ def calculate_mnist_accuracy(true_labels, z_train, z_validation):
 
 
 def calculate_isomap_dists(x, n_neighbors, landmark_inds):
+    if x is None:
+        return None
+
+    x = x.detach().cpu().numpy()
+
     neigh = NearestNeighbors(n_neighbors=n_neighbors, metric="euclidean").fit(x)
     pair_dists, neighbors = neigh.kneighbors(x, return_distance=True)  # type: ignore
     neighbors = neighbors[:, 1:]
@@ -52,17 +56,22 @@ def calculate_isomap_dists(x, n_neighbors, landmark_inds):
 
     dists = dijkstra(graph, indices=landmark_inds, directed=False, unweighted=False)
 
-    return dists
+    return torch.Tensor(dists)
 
 
-def iso_loss_func(target, out, z, dists, inds):
-    loss = torch.nn.functional.mse_loss(target, out, reduction="mean")
-    prox = torch.linalg.norm(dists - torch.cdist(z[inds], z), "fro") / np.sqrt(
-        dists.shape[0] * dists.shape[1]
-    )
-    # return loss + (50*prox)**2, loss, prox
-    # return loss + 50*prox, loss, prox
-    return loss + 100 * torch.sqrt(prox), loss, prox
+def iso_loss_func(target, out, z, dists, inds, calc_mse=True):
+    if target is None or dists is None:
+        return torch.Tensor(0), torch.Tensor(0), torch.Tensor(0)
+
+    mse = torch.nn.functional.mse_loss(target, out, reduction="mean") if calc_mse else 0
+    if inds.shape[0] > 0:
+        prox = torch.linalg.norm(dists - torch.cdist(z[inds], z), "fro") / np.sqrt(
+            dists.shape[0] * dists.shape[1]
+        )
+    else:
+        prox = torch.Tensor([0]).to(z.device)
+
+    return mse, prox
 
 
 def compute_corr(x1, x2):
