@@ -1,6 +1,7 @@
 *.egg-info
 data
 splice/__pycache__
+notebooks/__pycache__
 DMVAE/
 figures/
 multiview_and_self-supervision
