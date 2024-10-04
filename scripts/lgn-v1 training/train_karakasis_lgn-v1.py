@@ -8,7 +8,7 @@ from ray import train, tune
 from ray.tune.schedulers import ASHAScheduler
 from ray.tune.search.hyperopt import HyperOptSearch
 
-from splice.baseline import Karakasis
+from splice.nonalternating_baseline import Karakasis
 from splice.utils import calculate_mnist_accuracy, update_G
 
 
@@ -41,8 +41,7 @@ def train_karakasis(config):
             n_b=800,
             z_dim=2,
             device=device,
-            layers=[200] * config["n_layers"],
-            conv=False,
+            layers=[config["n_hidden"]] * config["n_layers"],
             _lambda=0.5,
         ).to(device)
 
@@ -50,7 +49,7 @@ def train_karakasis(config):
             model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"]
         )
 
-        num_epochs = 25000
+        num_epochs = 50000
         batch_size = config["batch_size"]
         fail_count = 0
         success = False
@@ -59,27 +58,27 @@ def train_karakasis(config):
 
         while not success and fail_count < 5:
             try:
-                G = model.update_G(a_train, b_train, batch_size)
-
                 for epoch in range(num_epochs):
                     if epoch % 1000 == 0:
                         print("rep: ", rep, "epoch: ", epoch)
                     for i in range(0, a_train.shape[0], batch_size):
                         a_batch = a_train[i : i + batch_size]
                         b_batch = b_train[i : i + batch_size]
-                        g = G[i : i + batch_size]
 
                         a_hat, b_hat, z_a, z_b = model(a_batch, b_batch)
                         loss, cca_loss, recon_loss_a, recon_loss_b = model.loss(
-                            a_batch, b_batch, a_hat, b_hat, z_a, z_b, g
+                            a_batch,
+                            b_batch,
+                            a_hat,
+                            b_hat,
+                            z_a,
+                            z_b,
                         )
 
                         optimizer.zero_grad()
                         loss.backward()
                         optimizer.step()
                         del a_batch, b_batch, a_hat, b_hat, z_a, z_b
-
-                    G = model.update_G(a_train, b_train, batch_size)
 
                     x_a_hat, x_b_hat, z_val_a, z_val_b = model(
                         a_validation, b_validation
@@ -92,27 +91,23 @@ def train_karakasis(config):
                         x_b_hat,
                         z_val_a,
                         z_val_b,
-                        (z_val_a + z_val_b) / 2,
                     )
                     if loss < best_loss:
-                        best_loss = loss
+                        best_loss = loss.item()
                         best_params = model.state_dict()
 
+                    if epoch % 1000:
+                        train.report(
+                            {
+                                "cost": best_loss,
+                                "recon_loss": (
+                                    F.mse_loss(x_a_hat, a_validation).item()
+                                    + F.mse_loss(x_b_hat, b_validation).item()
+                                ),
+                            }
+                        )
+
                 model.load_state_dict(best_params)
-
-                z_train_a = []
-                z_train_b = []
-
-                for i in range(0, a_train.shape[0], batch_size):
-                    a_batch = a_train[i : i + batch_size]
-                    b_batch = b_train[i : i + batch_size]
-
-                    x_a_hat, x_b_hat, z_a, z_b = model(a_batch, b_batch)
-                    z_train_a.append(z_a)
-                    z_train_b.append(z_b)
-
-                z_train_a = torch.cat(z_train_a, dim=0).detach().cpu().numpy()
-                z_train_b = torch.cat(z_train_b, dim=0).detach().cpu().numpy()
 
                 x_a_hat, x_b_hat, z_val_a, z_val_b = model(a_validation, b_validation)
 
@@ -147,8 +142,9 @@ def train_karakasis(config):
 
 if __name__ == "__main__":
     search_space = {
-        "n_layers": tune.choice([1, 2, 3, 4, 5, 6]),
-        "lr": tune.choice([1e-4, 1e-3, 1e-2, 1e-1]),
+        "n_layers": tune.choice([1, 2, 3, 4]),
+        "n_hidden": tune.choice([16, 64, 200]),
+        "lr": tune.choice([1e-4, 1e-3, 1e-2]),
         "weight_decay": tune.choice([0, 1e-4, 1e-3, 1e-2, 1e-1]),
         "batch_size": tune.choice([2000, 5000, 12096]),
     }

@@ -8,8 +8,7 @@ from ray import train, tune
 from ray.tune.schedulers import ASHAScheduler
 from ray.tune.search.hyperopt import HyperOptSearch
 
-from splice.baseline import DCCAE
-from splice.utils import calculate_mnist_accuracy, update_G
+from splice.nonalternating_baseline import DCCAE
 
 
 def train_dccae(config):
@@ -41,37 +40,42 @@ def train_dccae(config):
             n_b=800,
             z_dim=2,
             device=device,
-            layers=[200] * config["n_layers"],
-            conv=False,
-            _lambda=0.5,
+            layers=[config["n_hidden"]] * config["n_layers"],
+            _lambda=0.9,
         ).to(device)
 
-        optimizer = torch.optim.AdamW(
-            model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"]
-        )
-
-        num_epochs = 10000
+        num_epochs = 50000
         batch_size = config["batch_size"]
         fail_count = 0
         success = False
         best_loss = np.inf
+        best_rec_loss = np.inf
         best_params = None
+
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"]
+        )
+        scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=1, end_factor=1 / 50, total_iters=num_epochs
+        )
 
         while not success and fail_count < 5:
             try:
-                G = model.update_G(a_train, b_train, batch_size)
-
                 for epoch in range(num_epochs):
                     if epoch % 500 == 0:
                         print("REP %d EPOCH %d" % (rep, epoch))
                     for i in range(0, a_train.shape[0], batch_size):
                         a_batch = a_train[i : i + batch_size]
                         b_batch = b_train[i : i + batch_size]
-                        g = G[i : i + batch_size]
 
                         a_hat, b_hat, z_a, z_b = model(a_batch, b_batch)
                         loss, cca_loss, recon_loss_a, recon_loss_b = model.loss(
-                            a_batch, b_batch, a_hat, b_hat, z_a, z_b, g
+                            a_batch,
+                            b_batch,
+                            a_hat,
+                            b_hat,
+                            z_a,
+                            z_b,
                         )
 
                         optimizer.zero_grad()
@@ -79,7 +83,7 @@ def train_dccae(config):
                         optimizer.step()
                         del a_batch, b_batch, a_hat, b_hat, z_a, z_b
 
-                    G = model.update_G(a_train, b_train, batch_size)
+                    scheduler.step()
 
                     x_a_hat, x_b_hat, z_val_a, z_val_b = model(
                         a_validation, b_validation
@@ -92,35 +96,22 @@ def train_dccae(config):
                         x_b_hat,
                         z_val_a,
                         z_val_b,
-                        (z_val_a + z_val_b) / 2,
                     )
                     if loss < best_loss:
-                        best_loss = loss
+                        best_loss = loss.item()
+                        best_rec_loss = recon_loss_a.item() + recon_loss_b.item()
                         best_params = model.state_dict()
 
-                model.load_state_dict(best_params)
-
-                z_train_a = []
-                z_train_b = []
-
-                for i in range(0, a_train.shape[0], batch_size):
-                    a_batch = a_train[i : i + batch_size]
-                    b_batch = b_train[i : i + batch_size]
-
-                    x_a_hat, x_b_hat, z_a, z_b = model(a_batch, b_batch)
-                    z_train_a.append(z_a)
-                    z_train_b.append(z_b)
-
-                z_train_a = torch.cat(z_train_a, dim=0).detach().cpu().numpy()
-                z_train_b = torch.cat(z_train_b, dim=0).detach().cpu().numpy()
-
-                x_a_hat, x_b_hat, z_val_a, z_val_b = model(a_validation, b_validation)
+                    if epoch % 1000:
+                        train.report(
+                            {
+                                "cost": best_loss,
+                                "recon_loss": best_rec_loss,
+                            }
+                        )
 
                 cost[rep] = best_loss
-                recon_loss[rep] = (
-                    F.mse_loss(x_a_hat, a_validation).item()
-                    + F.mse_loss(x_b_hat, b_validation).item()
-                )
+                recon_loss[rep] = best_rec_loss
 
                 success = True
 
@@ -147,8 +138,9 @@ def train_dccae(config):
 
 if __name__ == "__main__":
     search_space = {
-        "n_layers": tune.choice([1, 2, 3, 4, 5, 6]),
-        "lr": tune.choice([1e-4, 1e-3, 1e-2, 1e-1]),
+        "n_layers": tune.choice([1, 2, 3, 4]),
+        "n_hidden": tune.choice([16, 64, 200]),
+        "lr": tune.choice([1e-4, 1e-3, 1e-2]),
         "weight_decay": tune.choice([0, 1e-4, 1e-3, 1e-2, 1e-1]),
         "batch_size": tune.choice([2000, 5000, 12096]),
     }
