@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from splice.base import decoder, encoder
+from splice.base_new import decoder, encoder
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -65,12 +65,8 @@ class DCCA(nn.Module):
         super().__init__()
         self.z_dim = z_dim
 
-        self.encoder_a = encoder(n_a, z_dim, layers, nl=nn.functional.sigmoid).to(
-            device
-        )
-        self.encoder_b = encoder(n_b, z_dim, layers, nl=nn.functional.sigmoid).to(
-            device
-        )
+        self.encoder_a = encoder(n_a, z_dim, layers, nl=nn.Sigmoid).to(device)
+        self.encoder_b = encoder(n_b, z_dim, layers, nl=nn.Sigmoid).to(device)
 
     def loss(self, z_a, z_b):
         return calc_cca_loss(z_a, z_b, self.z_dim)
@@ -88,18 +84,10 @@ class DCCAE(nn.Module):
         self.z_dim = z_dim
         self._lambda = _lambda
 
-        self.encoder_a = encoder(n_a, z_dim, layers, nl=nn.functional.sigmoid).to(
-            device
-        )
-        self.encoder_b = encoder(n_b, z_dim, layers, nl=nn.functional.sigmoid).to(
-            device
-        )
-        self.decoder_a = decoder(z_dim, n_a, layers[::-1], nl=nn.functional.sigmoid).to(
-            device
-        )
-        self.decoder_b = decoder(z_dim, n_b, layers[::-1], nl=nn.functional.sigmoid).to(
-            device
-        )
+        self.encoder_a = encoder(n_a, z_dim, layers, nl=nn.Sigmoid).to(device)
+        self.encoder_b = encoder(n_b, z_dim, layers, nl=nn.Sigmoid).to(device)
+        self.decoder_a = decoder(z_dim, n_a, layers[::-1], nl=nn.Sigmoid).to(device)
+        self.decoder_b = decoder(z_dim, n_b, layers[::-1], nl=nn.Sigmoid).to(device)
 
     def forward(self, x_a, x_b):
         z_a = self.encoder_a(x_a)
@@ -132,18 +120,10 @@ class Karakasis(nn.Module):
         self.z_dim = z_dim
         self._lambda = _lambda
 
-        self.encoder_a = encoder(n_a, z_dim, layers, nl=nn.functional.sigmoid).to(
-            device
-        )
-        self.encoder_b = encoder(n_b, z_dim, layers, nl=nn.functional.sigmoid).to(
-            device
-        )
-        self.decoder_a = decoder(z_dim, n_a, layers[::-1], nl=nn.functional.sigmoid).to(
-            device
-        )
-        self.decoder_b = decoder(z_dim, n_b, layers[::-1], nl=nn.functional.sigmoid).to(
-            device
-        )
+        self.encoder_a = encoder(n_a, z_dim, layers, nl=nn.Sigmoid).to(device)
+        self.encoder_b = encoder(n_b, z_dim, layers, nl=nn.Sigmoid).to(device)
+        self.decoder_a = decoder(z_dim, n_a, layers[::-1], nl=nn.Sigmoid).to(device)
+        self.decoder_b = decoder(z_dim, n_b, layers[::-1], nl=nn.Sigmoid).to(device)
 
     def forward(self, x_a, x_b):
         z_a = self.encoder_a(x_a)

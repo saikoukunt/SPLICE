@@ -5,6 +5,7 @@ notebooks/__pycache__
 DMVAE/**/__pycache__
 **/external/
 **/testing.ipynb
+DMVAE/**/testing.ipynb
 figures/
 multiview_and_self-supervision
 Multiview Mnist/

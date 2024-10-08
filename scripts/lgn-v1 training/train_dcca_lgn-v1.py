@@ -45,11 +45,12 @@ def train_dcca(config):
             model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"]
         )
 
-        num_epochs = 50000
+        num_epochs = int(50000 / (12096 / config["batch_size"]))
         batch_size = config["batch_size"]
         fail_count = 0
         success = False
         best_loss = np.inf
+        current_loss = np.inf
         best_params = None
 
         while not success and fail_count < 5:
@@ -75,7 +76,12 @@ def train_dcca(config):
                         best_loss = loss.item()
                         best_params = deepcopy(model.state_dict())
 
-                    if epoch % 1000:
+                    if current_loss - loss < 1e-3:
+                        break
+
+                    current_loss = loss
+
+                    if epoch % 1000 == 0:
                         train.report(
                             {
                                 "cost": best_loss,
@@ -107,14 +113,14 @@ if __name__ == "__main__":
         "n_layers": tune.choice([1, 2, 3, 4]),
         "n_hidden": tune.choice([16, 64, 200]),
         "lr": tune.choice([1e-4, 1e-3, 1e-2]),
-        "weight_decay": tune.choice([0, 1e-4, 1e-3, 1e-2, 1e-1]),
+        "weight_decay": tune.choice([0, 1e-4, 1e-3, 1e-2]),
         "batch_size": tune.choice([2000, 5000, 12096]),
     }
 
     results = tune.run(
         train_dcca,
         resources_per_trial={"cpu": 1, "gpu": 1},
-        num_samples=100,
+        num_samples=50,
         search_alg=HyperOptSearch(search_space, metric="cost", mode="min"),
         scheduler=ASHAScheduler(metric="cost", mode="min"),
     )

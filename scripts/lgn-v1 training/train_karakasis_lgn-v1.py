@@ -31,7 +31,7 @@ def train_karakasis(config):
     a_validation = torch.Tensor(train_data["responses"]["lgn"][12096:]).to(device)
     b_validation = torch.Tensor(train_data["responses"]["v1"][12096:]).to(device)
 
-    n_reps = 3
+    n_reps = 1
     cost = np.zeros(n_reps)
     recon_loss = np.zeros(n_reps)
 
@@ -42,14 +42,14 @@ def train_karakasis(config):
             z_dim=2,
             device=device,
             layers=[config["n_hidden"]] * config["n_layers"],
-            _lambda=0.5,
+            _lambda=0.9,
         ).to(device)
 
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"]
         )
 
-        num_epochs = 50000
+        num_epochs = int(50000 / (12096 / config["batch_size"]))
         batch_size = config["batch_size"]
         fail_count = 0
         success = False
@@ -96,7 +96,7 @@ def train_karakasis(config):
                         best_loss = loss.item()
                         best_params = model.state_dict()
 
-                    if epoch % 1000:
+                    if epoch % 1000 == 0:
                         train.report(
                             {
                                 "cost": best_loss,
@@ -145,14 +145,14 @@ if __name__ == "__main__":
         "n_layers": tune.choice([1, 2, 3, 4]),
         "n_hidden": tune.choice([16, 64, 200]),
         "lr": tune.choice([1e-4, 1e-3, 1e-2]),
-        "weight_decay": tune.choice([0, 1e-4, 1e-3, 1e-2, 1e-1]),
+        "weight_decay": tune.choice([0, 1e-4, 1e-3, 1e-2]),
         "batch_size": tune.choice([2000, 5000, 12096]),
     }
 
     results = tune.run(
         train_karakasis,
         resources_per_trial={"cpu": 1, "gpu": 1},
-        num_samples=100,
+        num_samples=50,
         search_alg=HyperOptSearch(search_space, metric="cost", mode="min"),
         scheduler=ASHAScheduler(
             metric="cost",
