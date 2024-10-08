@@ -55,7 +55,7 @@ def train_dcca(config):
         while not success and fail_count < 5:
             try:
                 for epoch in range(num_epochs):
-                    if epoch % 500 == 0:
+                    if epoch % 5000 == 0:
                         print("REP %d EPOCH %d" % (rep, epoch))
                     for i in range(0, a_train.shape[0], batch_size):
                         a_batch = a_train[i : i + batch_size]
@@ -75,7 +75,7 @@ def train_dcca(config):
                         best_loss = loss.item()
                         best_params = deepcopy(model.state_dict())
 
-                    if epoch % 1000:
+                    if epoch % 1000 == 0:
                         train.report(
                             {
                                 "cost": best_loss,
