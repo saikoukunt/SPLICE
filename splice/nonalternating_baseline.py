@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from splice.base_new import decoder, encoder
+from splice.base import decoder, encoder
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
