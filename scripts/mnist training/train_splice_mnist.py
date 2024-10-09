@@ -6,6 +6,7 @@ import pandas as pd
 import torch
 
 from splice.splice import SPLICE
+import matplotlib.pyplot as plt
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -46,26 +47,31 @@ if __name__ == "__main__":
         "..", "..", "results", "models", "mnist", "splice_mnist_%dD.pt" % n_private
     )
 
-    # if os.path.exists(filepath):
-    #     model.load_state_dict(torch.load(filepath))
-    # else:
-    model.fit(
-        X,
-        Y,
-        X_val,
-        Y_val,
-        model_filepath=filepath,
-        batch_size=100,
-        epochs=50,
-        lr=1e-3,
-        end_factor=1 / 100,
-        rec_iter=2,
-        disent_start=10,
-        msr_restart=5,
-        msr_iter_normal=3,
-        msr_iter_restart=10,
-        c_disent=0.1,
-        device=device,
-        weight_decay=1e-3,
-        print_every=1,
-    )
+    if os.path.exists(filepath):
+        model.load_state_dict(torch.load(filepath))
+    else:
+        model.fit(
+            X,
+            Y,
+            X_val,
+            Y_val,
+            model_filepath=filepath,
+            batch_size=100,
+            epochs=50,
+            lr=1e-3,
+            end_factor=1 / 100,
+            rec_iter=2,
+            disent_start=10,
+            msr_restart=10,
+            msr_iter_normal=3,
+            msr_iter_restart=10,
+            c_disent=0.2,
+            device=device,
+            weight_decay=1e-3,
+            print_every=1,
+        )
+
+    fix_index = np.argwhere(data["labels"] == 0).flatten()[0]
+    print(fix_index)
+    plt.imshow(data["original"][fix_index].reshape(28, 28))
+    plt.show()

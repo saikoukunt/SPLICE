@@ -297,24 +297,20 @@ class SPLICE(SPLICECore):
                     else torch.Tensor([0]).to(device)
                 )
 
-                # logic so small fluctuations in measurement loss don't prevent the model from saving
-                max_measurement_loss = (
-                    2 if (self.n_priv_a > 0) and (self.n_priv_b > 0) else 1
-                )
-                capped_measurement_loss = (
-                    max_measurement_loss
-                    if test_measurement_loss > max_measurement_loss
-                    else test_measurement_loss
-                )
-
                 test_loss = (
                     test_reconstruction_loss_a
                     + test_reconstruction_loss_b
                     + c_disent * test_disentangle_loss
-                    - capped_measurement_loss
+                    - 0.1 * test_measurement_loss
                 )
 
-                if (test_loss < best_loss) and (epoch >= disent_start):
+                if (
+                    (test_loss < best_loss)
+                    and (epoch >= disent_start)
+                    and (
+                        epoch % msr_restart
+                    )  # to avoid saving the model when measurement network has just been restarted
+                ):
                     best_loss = test_loss
                     torch.save(self.state_dict(), model_filepath)
                     print("saving new best model")
