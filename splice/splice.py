@@ -1,5 +1,6 @@
 import copy
 import math
+import test
 from random import shuffle
 
 import numpy as np
@@ -74,7 +75,7 @@ class SPLICECore(nn.Module):
         z_a, z_b2a, z_a2b, z_b, a_hat, b_hat = SPLICECore.forward(self, a, b)
 
         if fix_index is None:
-            fix_index = np.random.randint(0, a.shape[0])
+            fix_index = np.random.randint(0, a.shape[0], fix_index)
 
         a_in = (
             torch.hstack((torch.ones_like(z_a) * z_a[fix_index], z_b2a))
@@ -173,7 +174,6 @@ class SPLICE(SPLICECore):
             raise ValueError("Testing dataset B has the incorrect number of features.")
 
         n_batches = math.ceil(a_train.shape[0] / batch_size)
-        # n_msr_batches = math.ceil(a_train.shape[0] / msr_batch_size)
         optimizer = torch.optim.AdamW(
             self.parameters(), lr=lr, weight_decay=weight_decay
         )
@@ -225,7 +225,7 @@ class SPLICE(SPLICECore):
                 if epoch >= disent_start:
                     # 2) train measurement networks to minimize measurement loss
                     # cold restart periodically to avoid local minima
-                    if epoch % msr_restart == 0:
+                    if (epoch % msr_restart == 0) or (epoch == disent_start):
                         msr_params = self.restart_measurement_networks(device)
                         msr_optimizer = torch.optim.AdamW(msr_params, lr=lr)  # type: ignore
                         msr_iter = msr_iter_restart
@@ -296,21 +296,21 @@ class SPLICE(SPLICECore):
                     if epoch >= disent_start
                     else torch.Tensor([0]).to(device)
                 )
+                max_measurement_loss = 2 if (self.n_a > 0) and (self.n_b > 0) else 1
+                capped_measurement_loss = (  # so small fluctuations above perfect measurement loss don't cause the model to be saved
+                    test_measurement_loss
+                    if test_measurement_loss < max_measurement_loss
+                    else torch.Tensor([max_measurement_loss]).to(device)
+                )
 
                 test_loss = (
                     test_reconstruction_loss_a
                     + test_reconstruction_loss_b
                     + c_disent * test_disentangle_loss
-                    - 0.1 * test_measurement_loss
+                    - 0.1 * capped_measurement_loss
                 )
 
-                if (
-                    (test_loss < best_loss)
-                    and (epoch >= disent_start)
-                    and (
-                        epoch % msr_restart
-                    )  # to avoid saving the model when measurement network has just been restarted
-                ):
+                if (test_loss < best_loss) and (epoch >= disent_start):
                     best_loss = test_loss
                     torch.save(self.state_dict(), model_filepath)
                     print("saving new best model")
@@ -341,6 +341,7 @@ class SPLICE(SPLICECore):
         a_test,
         b_test,
         model_filepath,
+        fix_index=None,
         epochs=25000,
         lr=1e-3,
         end_factor=1 / 100,
@@ -349,6 +350,7 @@ class SPLICE(SPLICECore):
         msr_iter_normal=3,
         msr_iter_restart=1000,
         c_disent=0.1,
+        disent_iter=1,
         device=torch.device("cuda"),
         weight_decay=0,
         print_every=500,
@@ -356,25 +358,6 @@ class SPLICE(SPLICECore):
         n_landmarks=100,
         c_prox=50,
     ):
-        a_shared_subm, b_shared_subm, a_private_subm, b_private_subm = (
-            self.project_to_submanifolds(a_train, b_train)
-        )
-
-        landmark_inds = np.random.choice(a_train.shape[0], n_landmarks, replace=False)
-
-        a_private_dists = calculate_isomap_dists(
-            a_private_subm, n_neighbors, landmark_inds
-        ).to(device)
-        b_private_dists = calculate_isomap_dists(
-            b_private_subm, n_neighbors, landmark_inds
-        ).to(device)
-        a_shared_dists = calculate_isomap_dists(
-            a_shared_subm, n_neighbors, landmark_inds
-        ).to(device)
-        b_shared_dists = calculate_isomap_dists(
-            b_shared_subm, n_neighbors, landmark_inds
-        ).to(device)
-
         # input validation
         if a_train.shape[1] != self.n_a:
             raise ValueError("Training dataset A has the incorrect number of features.")
@@ -384,6 +367,38 @@ class SPLICE(SPLICECore):
             raise ValueError("Testing dataset A has the incorrect number of features.")
         if b_test.shape[1] != self.n_b:
             raise ValueError("Testing dataset B has the incorrect number of features.")
+
+        print("Projecting onto submanifolds")
+        a_shared_subm, b_shared_subm, a_private_subm, b_private_subm = (
+            self.project_to_submanifolds(a_train, b_train)
+        )
+
+        landmark_inds = np.random.choice(a_train.shape[0], n_landmarks, replace=False)
+
+        print("Calculating isomap distances")
+
+        a_private_dists = (
+            calculate_isomap_dists(a_private_subm, n_neighbors, landmark_inds).to(
+                device
+            )
+            if self.n_priv_a > 0
+            else None
+        )
+
+        b_private_dists = (
+            calculate_isomap_dists(b_private_subm, n_neighbors, landmark_inds).to(
+                device
+            )
+            if self.n_priv_b > 0
+            else None
+        )
+
+        a_shared_dists = calculate_isomap_dists(
+            a_shared_subm, n_neighbors, landmark_inds
+        ).to(device)
+        b_shared_dists = calculate_isomap_dists(
+            b_shared_subm, n_neighbors, landmark_inds
+        ).to(device)
 
         optimizer = torch.optim.AdamW(
             self.parameters(), lr=lr, weight_decay=weight_decay
@@ -400,12 +415,10 @@ class SPLICE(SPLICECore):
         for epoch in range(epochs):
             print(f"{epoch}", end="\r")
 
-            # 1) train encoders/decoders to minimize data reconstruction loss and isomap loss
-            self.freeze_all_except(
-                self.F_a, self.F_b, self.F_a2b, self.F_b2a, self.G_a, self.G_b
-            )
+            # 1) finetune shared encoders and decoders
+            self.freeze_all_except(self.F_a2b, self.F_b2a, self.G_a, self.G_b)
 
-            z_a, z_b2a, z_a2b, z_b, a_hat, b_hat = super().forward(a_train, b_train)
+            _, z_b2a, z_a2b, _, a_hat, b_hat = super().forward(a_train, b_train)
 
             mse_rec_a, prox_shared_a = iso_loss_func(
                 a_train, a_hat, z_b2a, a_shared_dists, landmark_inds
@@ -413,22 +426,13 @@ class SPLICE(SPLICECore):
             mse_rec_b, prox_shared_b = iso_loss_func(
                 b_train, b_hat, z_a2b, b_shared_dists, landmark_inds
             )
-            mse_rec_a, prox_private_a = iso_loss_func(
-                a_train, a_hat, z_a, a_private_dists, landmark_inds
-            )
-            mse_rec_b, prox_private_b = iso_loss_func(
-                b_train, b_hat, z_b, b_private_dists, landmark_inds
-            )
 
-            rec_loss = (
-                mse_rec_a
-                + mse_rec_b
-                + c_prox
-                * (prox_shared_a + prox_shared_b + prox_private_a + prox_private_b)
+            shared_loss = (
+                mse_rec_a + mse_rec_b + c_prox * (prox_shared_a + prox_shared_b)
             )
 
             optimizer.zero_grad()
-            rec_loss.backward()
+            shared_loss.backward()
             optimizer.step()
 
             disentangle_loss = torch.tensor([1]).to(device)
@@ -473,26 +477,43 @@ class SPLICE(SPLICECore):
                     msr_optimizer.step()
 
                 # 3) train private encoders to minimize disentanglement loss
-                self.freeze_all_except(self.F_a, self.F_b)
+                self.freeze_all_except(self.F_a, self.F_b, self.G_a, self.G_b)
 
-                _, _, _, _, m_a2b, m_b2a = self.measure(a_train, b_train)
+                for i in range(disent_iter):
 
-                l_disent_a = (
-                    m_a2b.var(dim=0).sum() / b_train.var(dim=0).sum()
-                    if m_a2b is not None
-                    else torch.Tensor([0]).to(device)
-                )
-                l_disent_b = (
-                    m_b2a.var(dim=0).sum() / a_train.var(dim=0).sum()
-                    if m_b2a is not None
-                    else torch.Tensor([0]).to(device)
-                )
+                    z_a, _, _, z_b, m_a2b, m_b2a, a_hat, b_hat = self.forward(
+                        a_train, b_train
+                    )
 
-                disentangle_loss = c_disent * (l_disent_a + l_disent_b)
+                    mse_rec_a, prox_private_a = iso_loss_func(
+                        a_train, a_hat, z_a, a_private_dists, landmark_inds
+                    )
+                    mse_rec_b, prox_private_b = iso_loss_func(
+                        b_train, b_hat, z_b, b_private_dists, landmark_inds
+                    )
 
-                optimizer.zero_grad()
-                disentangle_loss.backward()
-                optimizer.step()
+                    l_disent_a = (
+                        m_a2b.var(dim=0).sum() / b_train.var(dim=0).sum()
+                        if m_a2b is not None
+                        else torch.Tensor([0]).to(device)
+                    )
+                    l_disent_b = (
+                        m_b2a.var(dim=0).sum() / a_train.var(dim=0).sum()
+                        if m_b2a is not None
+                        else torch.Tensor([0]).to(device)
+                    )
+
+                    disentangle_loss = l_disent_a + l_disent_b
+                    private_loss = (
+                        c_prox * (prox_private_a + prox_private_b)
+                        + c_disent * (l_disent_a + l_disent_b)
+                        + mse_rec_a
+                        + mse_rec_b
+                    )
+
+                    optimizer.zero_grad()
+                    private_loss.backward()
+                    optimizer.step()
 
             # 4) save best model + print progress
             if epoch % print_every == 0:
@@ -538,12 +559,13 @@ class SPLICE(SPLICECore):
                     + c_disent * test_disentangle_loss
                     + c_prox
                     * (prox_private_a + prox_private_b + prox_shared_a + prox_shared_b)
-                    - test_measurement_loss
+                    - 0.1 * test_measurement_loss
                 )
 
-                if test_loss < best_loss:
+                if (test_loss < best_loss) and (epoch >= disent_start):
                     best_loss = test_loss
                     torch.save(self.state_dict(), model_filepath)
+                    print("saving new best model")
 
                 print(
                     "Epoch: %d \t A reconstruction: %.4f | %.4f \t B reconstruction: %.4f | %.4f \t Disentangling: %.4f | %.4f \t Measurement: %.4f | %.4f \t Isomap A: %.4f | %.4f \t Isomap B: %.4f | %.4f"

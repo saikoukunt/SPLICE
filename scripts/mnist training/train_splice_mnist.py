@@ -6,7 +6,6 @@ import pandas as pd
 import torch
 
 from splice.splice import SPLICE
-import matplotlib.pyplot as plt
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -40,7 +39,7 @@ if __name__ == "__main__":
         n_priv_b=n_private,
         layers_enc=[256, 128, 64, 32],
         layers_dec=[32, 64, 128, 256],
-        layers_msr=[32, 32, 64, 128, 256],
+        layers_msr=[32, 64, 128, 256],
     ).to(device)
 
     filepath = os.path.join(
@@ -56,22 +55,51 @@ if __name__ == "__main__":
             X_val,
             Y_val,
             model_filepath=filepath,
-            batch_size=100,
-            epochs=50,
+            batch_size=50000,
+            epochs=10000,
             lr=1e-3,
             end_factor=1 / 100,
             rec_iter=2,
-            disent_start=10,
-            msr_restart=10,
+            disent_start=500,
+            msr_restart=750,
             msr_iter_normal=3,
-            msr_iter_restart=10,
+            msr_iter_restart=1000,
             c_disent=0.2,
             device=device,
             weight_decay=1e-3,
-            print_every=1,
+            print_every=250,
         )
 
-    fix_index = np.argwhere(data["labels"] == 0).flatten()[0]
-    print(fix_index)
-    plt.imshow(data["original"][fix_index].reshape(28, 28))
-    plt.show()
+    # isomap_filepath = os.path.join(
+    #     "..",
+    #     "..",
+    #     "results",
+    #     "models",
+    #     "mnist",
+    #     "splice_isomap_mnist_%dD.pt" % n_private,
+    # )
+    # fix_index = np.argwhere(data["labels"] == 7).flatten()[1]
+
+    # model.fit_isomap_splice(
+    #     X,
+    #     Y,
+    #     X_val,
+    #     Y_val,
+    #     isomap_filepath,
+    #     fix_index=fix_index,
+    #     epochs=10000,
+    #     lr=(1e-3) / 25,
+    #     end_factor=1,
+    #     disent_start=0,
+    #     msr_restart=2000,
+    #     msr_iter_normal=2,
+    #     msr_iter_restart=2000,
+    #     c_disent=0.2,
+    #     disent_iter=1,
+    #     device=device,
+    #     weight_decay=1e-3,
+    #     print_every=500,
+    #     n_landmarks=100,
+    #     n_neighbors=100,
+    #     c_prox=1,
+    # )
