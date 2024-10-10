@@ -70,36 +70,36 @@ if __name__ == "__main__":
             print_every=250,
         )
 
-    # isomap_filepath = os.path.join(
-    #     "..",
-    #     "..",
-    #     "results",
-    #     "models",
-    #     "mnist",
-    #     "splice_isomap_mnist_%dD.pt" % n_private,
-    # )
-    # fix_index = np.argwhere(data["labels"] == 7).flatten()[1]
+    isomap_filepath = os.path.join(
+        "..",
+        "..",
+        "results",
+        "models",
+        "mnist",
+        "splice_isomap_mnist_%dD.pt" % n_private,
+    )
+    fix_index = np.argwhere(data["labels"] == 7).flatten()[1]
 
-    # model.fit_isomap_splice(
-    #     X,
-    #     Y,
-    #     X_val,
-    #     Y_val,
-    #     isomap_filepath,
-    #     fix_index=fix_index,
-    #     epochs=10000,
-    #     lr=(1e-3) / 25,
-    #     end_factor=1,
-    #     disent_start=0,
-    #     msr_restart=2000,
-    #     msr_iter_normal=2,
-    #     msr_iter_restart=2000,
-    #     c_disent=0.2,
-    #     disent_iter=1,
-    #     device=device,
-    #     weight_decay=1e-3,
-    #     print_every=500,
-    #     n_landmarks=100,
-    #     n_neighbors=100,
-    #     c_prox=1,
-    # )
+    model.fit_isomap_splice(
+        X,
+        Y,
+        X_val,
+        Y_val,
+        isomap_filepath,
+        fix_index=fix_index,
+        epochs=10001,
+        lr=(1e-3) / 25,
+        end_factor=1,
+        disent_start=0,
+        msr_restart=1000,
+        msr_iter_normal=2,
+        msr_iter_restart=2000,
+        c_disent=0.2,
+        disent_iter=1,
+        device=device,
+        weight_decay=1e-3,
+        print_every=500,
+        n_landmarks=100,
+        n_neighbors=100,
+        c_prox=0.01,
+    )
