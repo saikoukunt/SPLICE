@@ -29,6 +29,7 @@ class SPLICECore(nn.Module):
         n_priv_b,
         layers_enc,
         layers_dec,
+        conv=False,
         nl=carlosPlus,
     ):
         super().__init__()
@@ -40,13 +41,17 @@ class SPLICECore(nn.Module):
         self.n_priv_b = n_priv_b
         self.nl = nl
 
-        self.F_a = encoder(self.n_a, self.n_priv_a, layers_enc, nl)
-        self.F_a2b = encoder(self.n_a, self.n_shared, layers_enc, nl)
-        self.F_b2a = encoder(self.n_b, self.n_shared, layers_enc, nl)
-        self.F_b = encoder(self.n_b, self.n_priv_b, layers_enc, nl)
+        self.F_a = encoder(self.n_a, self.n_priv_a, layers_enc, nl, conv)
+        self.F_a2b = encoder(self.n_a, self.n_shared, layers_enc, nl, conv)
+        self.F_b2a = encoder(self.n_b, self.n_shared, layers_enc, nl, conv)
+        self.F_b = encoder(self.n_b, self.n_priv_b, layers_enc, nl, conv)
 
-        self.G_a = decoder(self.n_priv_a + self.n_shared, self.n_a, layers_dec, nl)
-        self.G_b = decoder(self.n_priv_b + self.n_shared, self.n_b, layers_dec, nl)
+        self.G_a = decoder(
+            self.n_priv_a + self.n_shared, self.n_a, layers_dec, nl, conv
+        )
+        self.G_b = decoder(
+            self.n_priv_b + self.n_shared, self.n_b, layers_dec, nl, conv
+        )
 
     def forward(self, x_a, x_b):
         z_a, z_b2a, z_a2b, z_b = self.encode(x_a, x_b)
@@ -116,6 +121,7 @@ class SPLICE(SPLICECore):
         layers_enc,
         layers_dec,
         layers_msr,
+        conv=False,
         nl=carlosPlus,
     ):
         super().__init__(
@@ -125,8 +131,8 @@ class SPLICE(SPLICECore):
             raise ValueError("Shared dimensionality cannot be 0.")
 
         self.layers_msr = layers_msr
-        self.M_a2b = decoder(n_priv_a, n_b, layers_msr, nl)
-        self.M_b2a = decoder(n_priv_b, n_a, layers_msr, nl)
+        self.M_a2b = decoder(n_priv_a, n_b, layers_msr, nl, conv=conv)
+        self.M_b2a = decoder(n_priv_b, n_a, layers_msr, nl, conv=conv)
 
     def forward(self, x_a, x_b):
         z_a, z_b2a, z_a2b, z_b, a_hat, b_hat = super().forward(x_a, x_b)
@@ -154,6 +160,7 @@ class SPLICE(SPLICECore):
         lr=1e-3,
         end_factor=1 / 100,
         rec_iter=1,
+        disent_iter=1,
         disent_start=1000,
         msr_restart=1000,
         msr_iter_normal=3,
@@ -259,17 +266,20 @@ class SPLICE(SPLICECore):
                     # 3) train private encoders to minimize disentanglement loss
                     self.freeze_all_except(self.F_a, self.F_b)
 
-                    _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
+                    for __ in range(disent_iter):
 
-                    l_disent_a = m_a2b.var(dim=0).sum() / b_batch.var(dim=0).sum() if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
-                    l_disent_b = m_b2a.var(dim=0).sum() / a_batch.var(dim=0).sum() if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
+                        _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
 
-                    disentangle_loss = c_disent * (l_disent_a + l_disent_b)
-                    cumulative_disentangle_loss += disentangle_loss.item()
+                        l_disent_a = m_a2b.var(dim=0).sum() / b_batch.var(dim=0).sum() if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
+                        l_disent_b = m_b2a.var(dim=0).sum() / a_batch.var(dim=0).sum() if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
 
-                    optimizer.zero_grad()
-                    disentangle_loss.backward()
-                    optimizer.step()
+                        disentangle_loss = c_disent * (l_disent_a + l_disent_b)
+                        if __ == disent_iter - 1:
+                            cumulative_disentangle_loss += disentangle_loss.item()
+
+                        optimizer.zero_grad()
+                        disentangle_loss.backward()
+                        optimizer.step()
 
                     print(
                         "                                                   ", end="\r"
@@ -296,12 +306,15 @@ class SPLICE(SPLICECore):
                     if epoch >= disent_start
                     else torch.Tensor([0]).to(device)
                 )
-                max_measurement_loss = 2 if (self.n_a > 0) and (self.n_b > 0) else 1
-                capped_measurement_loss = (  # so small fluctuations above perfect measurement loss don't cause the model to be saved
+                max_measurement_loss = (
+                    2 if ((self.n_priv_a > 0) and (self.n_priv_b > 0)) else 1
+                )
+                capped_measurement_loss = (  # so small fluctuations above max measurement loss don't cause the model to be saved
                     test_measurement_loss
                     if test_measurement_loss < max_measurement_loss
-                    else torch.Tensor([max_measurement_loss]).to(device)
+                    else torch.Tensor([0]).to(device)
                 )
+                print(capped_measurement_loss)
 
                 test_loss = (
                     test_reconstruction_loss_a

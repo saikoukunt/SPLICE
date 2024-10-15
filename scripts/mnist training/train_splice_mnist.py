@@ -46,7 +46,9 @@ if __name__ == "__main__":
         "..", "..", "results", "models", "mnist", "splice_mnist_%dD.pt" % n_private
     )
 
-    if os.path.exists(filepath):
+    retrain = True
+
+    if os.path.exists(filepath) and not retrain:
         model.load_state_dict(torch.load(filepath))
     else:
         model.fit(
@@ -58,13 +60,14 @@ if __name__ == "__main__":
             batch_size=50000,
             epochs=10000,
             lr=1e-3,
-            end_factor=1 / 100,
+            end_factor=1 / 50,
             rec_iter=2,
+            disent_iter=1,
             disent_start=500,
-            msr_restart=750,
-            msr_iter_normal=3,
-            msr_iter_restart=1000,
-            c_disent=0.2,
+            msr_restart=1000,
+            msr_iter_normal=15,
+            msr_iter_restart=5000,
+            c_disent=0.1,
             device=device,
             weight_decay=1e-3,
             print_every=250,
@@ -91,10 +94,10 @@ if __name__ == "__main__":
         lr=(1e-3) / 25,
         end_factor=1,
         disent_start=0,
-        msr_restart=1000,
-        msr_iter_normal=2,
-        msr_iter_restart=2000,
-        c_disent=0.2,
+        msr_restart=250,
+        msr_iter_normal=5,
+        msr_iter_restart=5000,
+        c_disent=0.1,
         disent_iter=1,
         device=device,
         weight_decay=1e-3,

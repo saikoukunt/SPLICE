@@ -14,12 +14,8 @@ class DCCA(nn.Module):
             self.encoder_a = conv_encoder(z_dim).to(device)
             self.encoder_b = conv_encoder(z_dim).to(device)
         else:
-            self.encoder_a = encoder(n_a, z_dim, layers, nl=nn.functional.sigmoid).to(
-                device
-            )
-            self.encoder_b = encoder(n_b, z_dim, layers, nl=nn.functional.sigmoid).to(
-                device
-            )
+            self.encoder_a = encoder(n_a, z_dim, layers, nl=nn.Sigmoid).to(device)
+            self.encoder_b = encoder(n_b, z_dim, layers, nl=nn.Sigmoid).to(device)
 
     def loss(self, z_a, z_b, g):
         mse = nn.MSELoss()
