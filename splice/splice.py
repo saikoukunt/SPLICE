@@ -1,23 +1,13 @@
-import copy
 import math
-import test
-from random import shuffle
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from scipy.sparse import lil_array
-from scipy.sparse.csgraph import dijkstra
-from sklearn.metrics import pairwise_distances
-from sklearn.neighbors import NearestNeighbors
 from torch.optim.lr_scheduler import LinearLR
 
-from splice.base import carlosPlus, conv_decoder, conv_encoder, decoder, encoder
+from splice.base import carlosPlus, decoder, encoder
 from splice.utils import calculate_isomap_dists, iso_loss_func
-
-# TODO: add convolutional option
-
 
 class SPLICECore(nn.Module):
     def __init__(
@@ -31,6 +21,7 @@ class SPLICECore(nn.Module):
         layers_dec,
         conv=False,
         nl=carlosPlus,
+        size=None,
     ):
         super().__init__()
 
@@ -47,10 +38,10 @@ class SPLICECore(nn.Module):
         self.F_b = encoder(self.n_b, self.n_priv_b, layers_enc, nl, conv)
 
         self.G_a = decoder(
-            self.n_priv_a + self.n_shared, self.n_a, layers_dec, nl, conv
+            self.n_priv_a + self.n_shared, self.n_a, layers_dec, nl, conv, size=size
         )
         self.G_b = decoder(
-            self.n_priv_b + self.n_shared, self.n_b, layers_dec, nl, conv
+            self.n_priv_b + self.n_shared, self.n_b, layers_dec, nl, conv, size=size
         )
 
     def forward(self, x_a, x_b):
@@ -77,7 +68,7 @@ class SPLICECore(nn.Module):
         return a_hat, b_hat
 
     def project_to_submanifolds(self, a, b, fix_index=None):
-        z_a, z_b2a, z_a2b, z_b, a_hat, b_hat = SPLICECore.forward(self, a, b)
+        z_a, z_b2a, z_a2b, z_b, _, _ = SPLICECore.forward(self, a, b)
 
         if fix_index is None:
             fix_index = np.random.randint(0, a.shape[0], fix_index)
@@ -123,16 +114,19 @@ class SPLICE(SPLICECore):
         layers_msr,
         conv=False,
         nl=carlosPlus,
+        size=None,
     ):
         super().__init__(
-            n_a, n_b, n_shared, n_priv_a, n_priv_b, layers_enc, layers_dec, nl
+            n_a, n_b, n_shared, n_priv_a, n_priv_b, layers_enc, layers_dec, nl, size=size
         )
         if n_shared == 0:
             raise ValueError("Shared dimensionality cannot be 0.")
 
+        self.conv = conv
+        self.size = size
         self.layers_msr = layers_msr
-        self.M_a2b = decoder(n_priv_a, n_b, layers_msr, nl, conv=conv)
-        self.M_b2a = decoder(n_priv_b, n_a, layers_msr, nl, conv=conv)
+        self.M_a2b = decoder(n_priv_a, n_b, layers_msr, nl, conv=conv, size=size)
+        self.M_b2a = decoder(n_priv_b, n_a, layers_msr, nl, conv=conv, size=size)
 
     def forward(self, x_a, x_b):
         z_a, z_b2a, z_a2b, z_b, a_hat, b_hat = super().forward(x_a, x_b)
@@ -611,10 +605,10 @@ class SPLICE(SPLICECore):
                 param.requires_grad = True
 
     def restart_measurement_networks(self, device):
-        self.M_a2b = decoder(self.n_priv_a, self.n_b, self.layers_msr, self.nl).to(
+        self.M_a2b = decoder(self.n_priv_a, self.n_b, self.layers_msr, self.nl, conv=self.conv, size=self.size).to(
             device
         )
-        self.M_b2a = decoder(self.n_priv_b, self.n_a, self.layers_msr, self.nl).to(
+        self.M_b2a = decoder(self.n_priv_b, self.n_a, self.layers_msr, self.nl, conv=self.conv, size=self.size).to(
             device
         )
 

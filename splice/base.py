@@ -9,11 +9,12 @@ Classes:
     decoder: Feedforward decoder network.
 """
 
+from typing import List
+
 import numpy as np
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List
+
 
 class ConvLayer():
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding):
@@ -34,6 +35,9 @@ class carlosPlus(nn.Module):
     Returns:
         Tensor: Output tensor.
     """
+    def __init__(self, _):
+        super(carlosPlus, self).__init__()
+
     def forward(self, x):
         return 2 * (F.softplus(x) - np.log(2))
 
@@ -211,73 +215,3 @@ class Unflatten3D(nn.Module):
     def forward(self, x):
         x = x.view(x.size()[0], self.size[0], self.size[1], self.size[2])
         return x
-
-class conv_encoder(nn.Module):
-    def __init__(self, z_dim, convLayers: List[ConvLayer], fcLayers, nl=nn.ReLU):
-        super().__init__()
-        if z_dim == 0:
-            self.layers = None
-        else:
-            self.layers = nn.Sequential()
-
-            for layer in convLayers:
-                self.layers.append(
-                    nn.Conv2d(
-                        layer.in_channels,
-                        layer.out_channels,
-                        layer.kernel_size,
-                        layer.stride,
-                        layer.padding,
-                    )
-                )
-                self.layers.append(nl(True))
-
-            if len(fcLayers) > 0:
-                self.layers.append(Flatten3D())
-
-                for i in range(len(fcLayers) - 1):
-                    self.layers.append(nn.Linear(fcLayers[i], fcLayers[i + 1]))
-                    self.layers.append(nl(True))
-
-                self.layers.append(nn.Linear(fcLayers[-1], z_dim))
-
-    def forward(self, x):
-        if self.layers is None:
-            return None
-        return self.layers(x)
-
-
-class conv_decoder(nn.Module):
-    def __init__(self, z_dim, fcLayers, convLayers: List[ConvLayer], size, nl=nn.ReLU):
-        super().__init__()
-
-        if z_dim == 0:
-            self.layers = None
-        else:
-            self.layers = nn.Sequential()
-
-            if len(fcLayers) > 0:
-                self.layers.append(nn.Linear(z_dim, fcLayers[0]))
-                self.layers.append(nl(True))
-                for i in range(len(fcLayers) - 1):
-                    self.layers.append(nn.Linear(fcLayers[i], fcLayers[i + 1]))
-                    self.layers.append(nl(True))
-
-                self.layers.append(Unflatten3D(size))
-
-            for layer in convLayers:
-                self.layers.append(nl(True))
-                self.layers.append(
-                    nn.ConvTranspose2d(
-                        layer.in_channels,
-                        layer.out_channels,
-                        layer.kernel_size,
-                        layer.stride,
-                        layer.padding,
-                    )
-                )
-
-    def forward(self, x):
-        if self.layers is None:
-            return None
-        return self.layers(x)
