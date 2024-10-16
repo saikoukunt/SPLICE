@@ -9,6 +9,7 @@ from torch.optim.lr_scheduler import LinearLR
 from splice.base import carlosPlus, decoder, encoder
 from splice.utils import calculate_isomap_dists, iso_loss_func
 
+
 class SPLICECore(nn.Module):
     def __init__(
         self,
@@ -117,7 +118,15 @@ class SPLICE(SPLICECore):
         size=None,
     ):
         super().__init__(
-            n_a, n_b, n_shared, n_priv_a, n_priv_b, layers_enc, layers_dec, nl, size=size
+            n_a,
+            n_b,
+            n_shared,
+            n_priv_a,
+            n_priv_b,
+            layers_enc,
+            layers_dec,
+            nl,
+            size=size,
         )
         if n_shared == 0:
             raise ValueError("Shared dimensionality cannot be 0.")
@@ -142,6 +151,7 @@ class SPLICE(SPLICECore):
 
         return z_a, z_b2a, z_a2b, z_b, m_a2b, m_b2a
 
+    # TODO: do batch iterations inside rec_iter and msr_iter
     def fit(
         self,
         a_train,
@@ -165,14 +175,23 @@ class SPLICE(SPLICECore):
         print_every=500,
     ):
         # input validation
-        if a_train.shape[1] != self.n_a:
-            raise ValueError("Training dataset A has the incorrect number of features.")
-        if b_train.shape[1] != self.n_b:
-            raise ValueError("Training dataset B has the incorrect number of features.")
-        if a_test.shape[1] != self.n_a:
-            raise ValueError("Testing dataset A has the incorrect number of features.")
-        if b_test.shape[1] != self.n_b:
-            raise ValueError("Testing dataset B has the incorrect number of features.")
+        if not self.conv:
+            if a_train.shape[1] != self.n_a:
+                raise ValueError(
+                    "Training dataset A has the incorrect number of features."
+                )
+            if b_train.shape[1] != self.n_b:
+                raise ValueError(
+                    "Training dataset B has the incorrect number of features."
+                )
+            if a_test.shape[1] != self.n_a:
+                raise ValueError(
+                    "Testing dataset A has the incorrect number of features."
+                )
+            if b_test.shape[1] != self.n_b:
+                raise ValueError(
+                    "Testing dataset B has the incorrect number of features."
+                )
 
         n_batches = math.ceil(a_train.shape[0] / batch_size)
         optimizer = torch.optim.AdamW(
@@ -188,29 +207,29 @@ class SPLICE(SPLICECore):
         best_loss = float("inf")
 
         for epoch in range(epochs):
-            shuffle_inds = np.random.permutation(a_train.shape[0])
-
             cumulative_l_rec_a = 0
             cumulative_l_rec_b = 0
             cumulative_measurement_loss = 0
             cumulative_disentangle_loss = 0
 
             for batch_start in range(0, a_train.shape[0], batch_size):
-                print(f"Epoch {epoch}, Batch {batch_start}", end="\r")
-                a_batch = a_train[shuffle_inds][batch_start : batch_start + batch_size]
-                b_batch = b_train[shuffle_inds][batch_start : batch_start + batch_size]
-
-                # 1) train encoders/decoders to minimize data reconstruction loss
+                # 1) train networks to minimize reconstruction loss
                 self.freeze_all_except(
                     self.F_a, self.F_b, self.F_a2b, self.F_b2a, self.G_a, self.G_b
                 )
 
-                for __ in range(rec_iter):
+                for i in range(rec_iter):
+                    print(
+                        f"Epoch {epoch}, Rec Sample {batch_start}, Iter {i+1}", end="\r"
+                    )
+                    a_batch = a_train[batch_start : batch_start + batch_size]
+                    b_batch = b_train[batch_start : batch_start + batch_size]
+
                     _, _, _, _, a_hat, b_hat = super().forward(a_batch, b_batch)
                     l_rec_a = F.mse_loss(a_hat, a_batch)
                     l_rec_b = F.mse_loss(b_hat, b_batch)
 
-                    if __ == rec_iter - 1:
+                    if i == rec_iter - 1:
                         cumulative_l_rec_a += l_rec_a.item()
                         cumulative_l_rec_b += l_rec_b.item()
 
@@ -220,22 +239,48 @@ class SPLICE(SPLICECore):
                     reconstruction_loss.backward()
                     optimizer.step()
 
-                disentangle_loss = torch.tensor([1]).to(device)
-                measurement_loss = torch.tensor([0]).to(device)
+                print("                                                   ", end="\r")
 
+                # 2) train private encoders to minimize disentanglement loss
+                self.freeze_all_except(self.F_a, self.F_b)
                 if epoch >= disent_start:
-                    # 2) train measurement networks to minimize measurement loss
-                    # cold restart periodically to avoid local minima
-                    if (epoch % msr_restart == 0) or (epoch == disent_start):
-                        msr_params = self.restart_measurement_networks(device)
-                        msr_optimizer = torch.optim.AdamW(msr_params, lr=lr)  # type: ignore
-                        msr_iter = msr_iter_restart
-                    else:
-                        msr_iter = msr_iter_normal
+                    print(f"Epoch {epoch}, Disent Sample {batch_start}", end="\r")
+                    _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
 
-                    self.freeze_all_except(self.M_a2b, self.M_b2a)
+                    l_disent_a = m_a2b.var(dim=0).sum() / b_batch.var(dim=0).sum() if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
+                    l_disent_b = m_b2a.var(dim=0).sum() / a_batch.var(dim=0).sum() if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
 
-                    for __ in range(msr_iter):
+                    disentangle_loss = c_disent * (l_disent_a + l_disent_b)
+                    cumulative_disentangle_loss += disentangle_loss.item()
+
+                    optimizer.zero_grad()
+                    disentangle_loss.backward()
+                    optimizer.step()
+
+                    print(
+                        "                                                   ", end="\r"
+                    )
+
+            if epoch >= disent_start:
+                # 3) train measurement networks to minimize measurement loss
+                # cold restart periodically to avoid local minima
+                if (epoch % msr_restart == 0) or (epoch == disent_start):
+                    msr_params = self.restart_measurement_networks(device)
+                    msr_optimizer = torch.optim.AdamW(msr_params, lr=lr)  # type: ignore
+                    msr_iter = msr_iter_restart
+                else:
+                    msr_iter = msr_iter_normal
+
+                self.freeze_all_except(self.M_a2b, self.M_b2a)
+
+                for i in range(msr_iter):
+                    for batch_start in range(0, a_train.shape[0], batch_size):
+                        print(
+                            f"Epoch {epoch}, Iter {i+1}, Msr Sample {batch_start}",
+                            end="\r",
+                        )
+                        a_batch = a_train[batch_start : batch_start + batch_size]
+                        b_batch = b_train[batch_start : batch_start + batch_size]
 
                         _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
 
@@ -246,38 +291,17 @@ class SPLICE(SPLICECore):
                         l_msr_b *= self.n_a / a_batch.var(dim=0).sum()
 
                         measurement_loss = l_msr_a + l_msr_b
-                        if __ == msr_iter - 1:
+                        if i == msr_iter - 1:
                             cumulative_measurement_loss += measurement_loss.item()
 
                         msr_optimizer.zero_grad()
                         measurement_loss.backward()
                         msr_optimizer.step()
 
-                    print(
-                        "                                                   ", end="\r"
-                    )
-
-                    # 3) train private encoders to minimize disentanglement loss
-                    self.freeze_all_except(self.F_a, self.F_b)
-
-                    for __ in range(disent_iter):
-
-                        _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
-
-                        l_disent_a = m_a2b.var(dim=0).sum() / b_batch.var(dim=0).sum() if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
-                        l_disent_b = m_b2a.var(dim=0).sum() / a_batch.var(dim=0).sum() if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
-
-                        disentangle_loss = c_disent * (l_disent_a + l_disent_b)
-                        if __ == disent_iter - 1:
-                            cumulative_disentangle_loss += disentangle_loss.item()
-
-                        optimizer.zero_grad()
-                        disentangle_loss.backward()
-                        optimizer.step()
-
-                    print(
-                        "                                                   ", end="\r"
-                    )
+                        print(
+                            "                                                   ",
+                            end="\r",
+                        )
 
             # 4) save best model + print progress
             if epoch % print_every == 0:
@@ -303,18 +327,17 @@ class SPLICE(SPLICECore):
                 max_measurement_loss = (
                     2 if ((self.n_priv_a > 0) and (self.n_priv_b > 0)) else 1
                 )
-                capped_measurement_loss = (  # so small fluctuations above max measurement loss don't cause the model to be saved
-                    test_measurement_loss
-                    if test_measurement_loss < max_measurement_loss
-                    else torch.Tensor([0]).to(device)
-                )
-                print(capped_measurement_loss)
+                # capped_measurement_loss = (  # so small fluctuations above max measurement loss don't cause the model to be saved
+                #     test_measurement_loss
+                #     if test_measurement_loss < max_measurement_loss
+                #     else torch.Tensor([0]).to(device)
+                # )
 
                 test_loss = (
                     test_reconstruction_loss_a
                     + test_reconstruction_loss_b
                     + c_disent * test_disentangle_loss
-                    - 0.1 * capped_measurement_loss
+                    - 0.1 * test_measurement_loss
                 )
 
                 if (test_loss < best_loss) and (epoch >= disent_start):
@@ -605,12 +628,22 @@ class SPLICE(SPLICECore):
                 param.requires_grad = True
 
     def restart_measurement_networks(self, device):
-        self.M_a2b = decoder(self.n_priv_a, self.n_b, self.layers_msr, self.nl, conv=self.conv, size=self.size).to(
-            device
-        )
-        self.M_b2a = decoder(self.n_priv_b, self.n_a, self.layers_msr, self.nl, conv=self.conv, size=self.size).to(
-            device
-        )
+        self.M_a2b = decoder(
+            self.n_priv_a,
+            self.n_b,
+            self.layers_msr,
+            self.nl,
+            conv=self.conv,
+            size=self.size,
+        ).to(device)
+        self.M_b2a = decoder(
+            self.n_priv_b,
+            self.n_a,
+            self.layers_msr,
+            self.nl,
+            conv=self.conv,
+            size=self.size,
+        ).to(device)
 
         msr_params = list(self.M_a2b.parameters()) + list(self.M_b2a.parameters())
 
