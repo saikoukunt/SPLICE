@@ -16,7 +16,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class ConvLayer():
+class ConvLayer:
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding):
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -35,7 +35,8 @@ class carlosPlus(nn.Module):
     Returns:
         Tensor: Output tensor.
     """
-    def __init__(self, _):
+
+    def __init__(self, _=None):
         super(carlosPlus, self).__init__()
 
     def forward(self, x):
@@ -104,7 +105,6 @@ class encoder(nn.Module):
 
                     self.layers.append(nn.Linear(fcLayers[-1], z_dim))
 
-
     def forward(self, x):
         """
         Forward pass through the encoder network.
@@ -144,10 +144,10 @@ class decoder(nn.Module):
 
         if z_dim == 0 or nOutputs == 0:
             self.layers = None
-        
+
         else:
             self.z_dim = z_dim
-            self.nOutputs = nOutputs    
+            self.nOutputs = nOutputs
             self.layers = nn.Sequential()
 
             if not conv:
@@ -182,8 +182,6 @@ class decoder(nn.Module):
                             layer.padding,
                         )
                     )
-                
-
 
     def forward(self, x):
         """
@@ -203,7 +201,7 @@ class decoder(nn.Module):
 
 class Flatten3D(nn.Module):
     def forward(self, x):
-        x = x.view(x.size()[0], -1)
+        x = x.reshape(x.size()[0], -1)
         return x
 
 
@@ -213,5 +211,5 @@ class Unflatten3D(nn.Module):
         self.size = size
 
     def forward(self, x):
-        x = x.view(x.size()[0], self.size[0], self.size[1], self.size[2])
+        x = x.reshape(x.size()[0], self.size[0], self.size[1], self.size[2])
         return x
