@@ -60,7 +60,6 @@ model = SPLICE(
     size=(64, 8, 8),
 ).to(device)
 
-<<<<<<< HEAD
 model = SPLICE(
     n_a=64 * 64 * 3,
     n_b=64 * 64 * 3,
@@ -73,20 +72,6 @@ model = SPLICE(
     layers_msr=[200, 200, 100, 100, 100, 100],
     size=None,
 ).to(device)
-=======
-# model = SPLICE(
-#     n_a=64 * 64 * 3,
-#     n_b=64 * 64 * 3,
-#     n_priv_a=30,
-#     n_priv_b=30,
-#     n_shared=2,
-#     conv=False,
-#     layers_enc=[200, 200, 100, 100, 100, 100],
-#     layers_dec=[200, 200, 100, 100, 100, 100],
-#     layers_msr=[200, 200, 100, 100, 100, 100],
-#     size=None,
-# ).to(device)
->>>>>>> 6bb97c23a9aa83707f5a306cb03c3b1d37406d5a
 
 filepath = os.path.join("..", "..", "results", "models", "sprites", "splice_sprites.pt")
 

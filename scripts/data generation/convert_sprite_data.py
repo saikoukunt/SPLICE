@@ -68,26 +68,16 @@ for i in range(test_data.shape[0]):
 
 np.savez_compressed(
     f"../../data/sprites/train.npz",
-<<<<<<< HEAD
     view1=train_view1,
     view2=train_view2,
-=======
-    view1=np.clip(train_view1, 0, 1),
-    view2=np.clip(train_view2, 0, 1),
->>>>>>> 6bb97c23a9aa83707f5a306cb03c3b1d37406d5a
     angles=train_angles,
     view2_inds=train_view2_inds,
 )
 
 np.savez_compressed(
     f"../../data/sprites/test.npz",
-<<<<<<< HEAD
     view1=test_view1,
     view2=test_view2,
-=======
-    view1=np.clip(test_view1, 0, 1),
-    view2=np.clip(test_view2, 0, 1),
->>>>>>> 6bb97c23a9aa83707f5a306cb03c3b1d37406d5a
     angles=test_angles,
     view2_inds=test_view2_inds,
 )

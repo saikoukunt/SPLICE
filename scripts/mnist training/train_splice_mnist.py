@@ -37,15 +37,9 @@ if __name__ == "__main__":
         n_shared=30,
         n_priv_a=0,
         n_priv_b=n_private,
-<<<<<<< HEAD
         layers_enc=[256, 128, 64, 30 + n_private],
         layers_dec=[30 + n_private, 64, 128, 256],
         layers_msr=[30 + n_private, 64, 128, 256],
-=======
-        layers_enc=[128, 64, 32],
-        layers_dec=[32, 64, 128],
-        layers_msr=[32, 64, 128],
->>>>>>> 6bb97c23a9aa83707f5a306cb03c3b1d37406d5a
     ).to(device)
 
     filepath = os.path.join(
@@ -66,17 +60,10 @@ if __name__ == "__main__":
             batch_size=100,
             epochs=100,
             lr=1e-3,
-<<<<<<< HEAD
             end_factor=1 / 50,
             rec_iter=1,
             disent_iter=1,
             disent_start=5,
-=======
-            end_factor=1 / 500,
-            rec_iter=1,
-            disent_iter=1,
-            disent_start=10,
->>>>>>> 6bb97c23a9aa83707f5a306cb03c3b1d37406d5a
             msr_restart=100,
             msr_iter_normal=10,
             msr_iter_restart=50,

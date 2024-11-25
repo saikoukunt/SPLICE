@@ -254,17 +254,10 @@ class SPLICE(SPLICECore):
                 if epoch > disent_start:
                     for i in range(disent_iter):
                         print(f"Epoch {epoch}, Disent Sample {batch_start}", end="\r")
-<<<<<<< HEAD
                         _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
 
                         l_disent_a = m_a2b.var(dim=0).sum() / b_batch.var(dim=0).sum() if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
                         l_disent_b = m_b2a.var(dim=0).sum() / a_batch.var(dim=0).sum() if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
-=======
-                        _, _, _, z_b, m_a2b, m_b2a = self.measure(a_batch, b_batch)
-
-                        l_disent_a = m_a2b.reshape(a_batch.shape[0], -1).var(dim=0).sum() / b_train_var if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
-                        l_disent_b = m_b2a.reshape(a_batch.shape[0], -1).var(dim=0).sum() / a_train_var if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
->>>>>>> 6bb97c23a9aa83707f5a306cb03c3b1d37406d5a
 
                         disentangle_loss = c_disent * (l_disent_a + l_disent_b)
                         if i == disent_iter - 1:
