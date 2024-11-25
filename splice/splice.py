@@ -125,7 +125,8 @@ class SPLICE(SPLICECore):
             n_priv_b,
             layers_enc,
             layers_dec,
-            nl,
+            conv=conv,
+            nl=nl,
             size=size,
         )
         if n_shared == 0:
@@ -151,7 +152,6 @@ class SPLICE(SPLICECore):
 
         return z_a, z_b2a, z_a2b, z_b, m_a2b, m_b2a
 
-    # TODO: do batch iterations inside rec_iter and msr_iter
     def fit(
         self,
         a_train,
@@ -201,9 +201,14 @@ class SPLICE(SPLICECore):
             optimizer, total_iters=epochs, start_factor=1, end_factor=end_factor
         )
 
-        msr_params = list(self.M_a2b.parameters()) + list(self.M_b2a.parameters())
-        msr_optimizer = torch.optim.AdamW(msr_params, lr=lr)
+        if not (self.n_priv_a == 0 and self.n_priv_b == 0):
+            msr_params = list(self.M_a2b.parameters()) + list(self.M_b2a.parameters())
+            msr_optimizer = torch.optim.AdamW(
+                msr_params, lr=lr, weight_decay=weight_decay
+            )
 
+        a_train_var = a_train.reshape(a_train.shape[0], -1).var(dim=0).sum()
+        b_train_var = b_train.reshape(a_train.shape[0], -1).var(dim=0).sum()
         best_loss = float("inf")
 
         for epoch in range(epochs):
@@ -241,32 +246,47 @@ class SPLICE(SPLICECore):
 
                 print("                                                   ", end="\r")
 
+                if self.n_priv_a == 0 and self.n_priv_b == 0:
+                    continue
+
                 # 2) train private encoders to minimize disentanglement loss
                 self.freeze_all_except(self.F_a, self.F_b)
-                if epoch >= disent_start:
-                    print(f"Epoch {epoch}, Disent Sample {batch_start}", end="\r")
-                    _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
+                if epoch > disent_start:
+                    for i in range(disent_iter):
+                        print(f"Epoch {epoch}, Disent Sample {batch_start}", end="\r")
+<<<<<<< HEAD
+                        _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
 
-                    l_disent_a = m_a2b.var(dim=0).sum() / b_batch.var(dim=0).sum() if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
-                    l_disent_b = m_b2a.var(dim=0).sum() / a_batch.var(dim=0).sum() if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
+                        l_disent_a = m_a2b.var(dim=0).sum() / b_batch.var(dim=0).sum() if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
+                        l_disent_b = m_b2a.var(dim=0).sum() / a_batch.var(dim=0).sum() if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
+=======
+                        _, _, _, z_b, m_a2b, m_b2a = self.measure(a_batch, b_batch)
 
-                    disentangle_loss = c_disent * (l_disent_a + l_disent_b)
-                    cumulative_disentangle_loss += disentangle_loss.item()
+                        l_disent_a = m_a2b.reshape(a_batch.shape[0], -1).var(dim=0).sum() / b_train_var if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
+                        l_disent_b = m_b2a.reshape(a_batch.shape[0], -1).var(dim=0).sum() / a_train_var if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
+>>>>>>> 6bb97c23a9aa83707f5a306cb03c3b1d37406d5a
 
-                    optimizer.zero_grad()
-                    disentangle_loss.backward()
-                    optimizer.step()
+                        disentangle_loss = c_disent * (l_disent_a + l_disent_b)
+                        if i == disent_iter - 1:
+                            cumulative_disentangle_loss += disentangle_loss.item()
 
-                    print(
-                        "                                                   ", end="\r"
-                    )
+                        optimizer.zero_grad()
+                        disentangle_loss.backward()
+                        optimizer.step()
 
-            if epoch >= disent_start:
+                        print(
+                            "                                                   ",
+                            end="\r",
+                        )
+
+            if (epoch >= disent_start) and not (
+                self.n_priv_a == 0 and self.n_priv_b == 0
+            ):
                 # 3) train measurement networks to minimize measurement loss
                 # cold restart periodically to avoid local minima
                 if (epoch % msr_restart == 0) or (epoch == disent_start):
                     msr_params = self.restart_measurement_networks(device)
-                    msr_optimizer = torch.optim.AdamW(msr_params, lr=lr)  # type: ignore
+                    msr_optimizer = torch.optim.AdamW(msr_params, lr=lr, weight_decay=weight_decay)  # type: ignore
                     msr_iter = msr_iter_restart
                 else:
                     msr_iter = msr_iter_normal
@@ -284,11 +304,11 @@ class SPLICE(SPLICECore):
 
                         _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
 
-                        l_msr_a = F.mse_loss(m_a2b, b_batch) if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
-                        l_msr_b = F.mse_loss(m_b2a, a_batch) if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
+                        l_msr_a = F.mse_loss(m_a2b.reshape(a_batch.shape[0], -1), b_batch.reshape(a_batch.shape[0], -1)) if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
+                        l_msr_b = F.mse_loss(m_b2a.reshape(a_batch.shape[0], -1), a_batch.reshape(a_batch.shape[0], -1)) if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
                         # normalize by variance of target variables and # of targets to make loss scale-invariant
-                        l_msr_a *= self.n_b / b_batch.var(dim=0).sum()
-                        l_msr_b *= self.n_a / a_batch.var(dim=0).sum()
+                        l_msr_a *= self.n_b / b_train_var
+                        l_msr_b *= self.n_a / a_train_var
 
                         measurement_loss = l_msr_a + l_msr_b
                         if i == msr_iter - 1:
@@ -310,14 +330,18 @@ class SPLICE(SPLICECore):
                 test_reconstruction_loss_a = F.mse_loss(a_hat, a_test)
                 test_reconstruction_loss_b = F.mse_loss(b_hat, b_test)
 
-                test_disent_a = m_a2b.var(dim=0).sum() / b_test.var(dim=0).sum() if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
-                test_disent_b = m_b2a.var(dim=0).sum() / a_test.var(dim=0).sum() if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
+                test_disent_a = m_a2b.reshape(a_test.shape[0], -1).var(dim=0).sum() / b_test.reshape(a_test.shape[0], -1).var(dim=0).sum() if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
+                test_disent_b = m_b2a.reshape(a_test.shape[0], -1).var(dim=0).sum() / a_test.reshape(a_test.shape[0], -1).var(dim=0).sum() if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
                 test_disentangle_loss = test_disent_a + test_disent_b
 
-                test_msr_a = F.mse_loss(m_a2b, b_test) if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
-                test_msr_b = F.mse_loss(m_b2a, a_test) if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
-                test_msr_a *= self.n_b / b_test.var(dim=0).sum()
-                test_msr_b *= self.n_a / a_test.var(dim=0).sum()
+                test_msr_a = F.mse_loss(m_a2b.reshape(a_test.shape[0], -1), b_test.reshape(a_test.shape[0], -1)) if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
+                test_msr_b = F.mse_loss(m_b2a.reshape(a_test.shape[0], -1), a_test.reshape(a_test.shape[0], -1)) if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
+                test_msr_a *= (
+                    self.n_b / b_test.reshape(a_test.shape[0], -1).var(dim=0).sum()
+                )
+                test_msr_b *= (
+                    self.n_a / a_test.reshape(a_test.shape[0], -1).var(dim=0).sum()
+                )
 
                 test_measurement_loss = (
                     test_msr_a + test_msr_b
@@ -327,17 +351,17 @@ class SPLICE(SPLICECore):
                 max_measurement_loss = (
                     2 if ((self.n_priv_a > 0) and (self.n_priv_b > 0)) else 1
                 )
-                # capped_measurement_loss = (  # so small fluctuations above max measurement loss don't cause the model to be saved
-                #     test_measurement_loss
-                #     if test_measurement_loss < max_measurement_loss
-                #     else torch.Tensor([0]).to(device)
-                # )
+                capped_measurement_loss = (  # so small fluctuations above max measurement loss don't cause the model to be saved
+                    test_measurement_loss
+                    if test_measurement_loss < max_measurement_loss
+                    else torch.Tensor([max_measurement_loss]).to(device)
+                )
 
                 test_loss = (
                     test_reconstruction_loss_a
                     + test_reconstruction_loss_b
                     + c_disent * test_disentangle_loss
-                    - 0.1 * test_measurement_loss
+                    - 0.1 * capped_measurement_loss
                 )
 
                 if (test_loss < best_loss) and (epoch >= disent_start):
