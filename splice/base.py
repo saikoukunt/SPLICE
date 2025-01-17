@@ -17,12 +17,15 @@ import torch.nn.functional as F
 
 
 class ConvLayer:
-    def __init__(self, in_channels, out_channels, kernel_size, stride, padding):
+    def __init__(
+        self, in_channels, out_channels, kernel_size, stride, padding, out_padding=0
+    ):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
+        self.output_padding = out_padding
 
 
 class carlosPlus(nn.Module):
@@ -41,6 +44,24 @@ class carlosPlus(nn.Module):
 
     def forward(self, x):
         return 2 * (F.softplus(x) - np.log(2))
+
+
+class leakyRelu(nn.Module):
+    """
+    Variant of the softplus activation function.
+
+    Args:
+        x (Tensor): Input tensor.
+
+    Returns:
+        Tensor: Output tensor.
+    """
+
+    def __init__(self, _=None):
+        super(leakyRelu, self).__init__()
+
+    def forward(self, x):
+        return F.leaky_relu(x, 0.2)
 
 
 class encoder(nn.Module):
@@ -180,6 +201,7 @@ class decoder(nn.Module):
                             layer.kernel_size,
                             layer.stride,
                             layer.padding,
+                            layer.output_padding,
                         )
                     )
 
