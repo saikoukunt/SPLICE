@@ -1,112 +1,123 @@
+import argparse
 import os
+import sys
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch as torch
-from sklearn.decomposition import PCA
 
-from splice.base import ConvLayer, decoder, encoder
-from splice.nonalternating_baseline import DCCA
+from splice.base import ConvLayer
 from splice.splice import SPLICE
 
-device = torch.device(
-    "cuda"
-    if torch.cuda.is_available()
-    else "mps" if torch.backends.mps.is_available() else "cpu"
-)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
 
-train = np.load("../../data/sprites/train.npz")
-test = np.load("../../data/sprites/test.npz")
+    parser.add_argument(
+        "--conv",
+        default=False,
+        required=False,
+        help="True if convolutional neural networks should be used",
+    )
+    parser.add_argument(
+        "--angle",
+        required=True,
+        help='"shared" to train on the dataset where angle of rotation is shared between the two views, "private" to train on the dataset where angle is private.',
+    )
+    args = vars(parser.parse_args(sys.argv[1:]))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    if args["angle"] == "shared":
+        # train = np.load("../../data/sprites/single-pose_shared-angle_train.npz")
+        # test = np.load("../../data/sprites/single-pose_shared-angle_test.npz")
+        train = np.load("../../data/sprites/single_pose_train.npz")
+        test = np.load("../../data/sprites/single_pose_test.npz")
+        filepath = os.path.join(
+            "..", "..", "results", "models", "sprites", "splice_sprites_shared-angle.pt"
+        )
+        n_shared = 2
+        n_private_a = 500
+        n_private_b = 500
+        lr = 1e-4
+    elif args["angle"] == "private":
+        train = np.load("../../data/sprites/single-pose_private-angle_train.npz")
+        test = np.load("../../data/sprites/single-pose_private-angle_test.npz")
+        filepath = os.path.join(
+            "..",
+            "..",
+            "results",
+            "models",
+            "sprites",
+            "splice_sprites_private-angle.pt",
+        )
+        n_shared = 500
+        n_private_a = 2
+        n_private_b = 2
+        lr = 1e-4
+    else:
+        parser.error('Unknown option for angle: must be either "private" or "shared".')
 
-A_train = torch.Tensor(train["view1"][:50000].transpose(0, 3, 1, 2)).to(device)
-B_train = torch.Tensor(train["view2"][:50000].transpose(0, 3, 1, 2)).to(device)
+    if args["conv"]:
+        A_train = torch.Tensor(train["view1"].transpose(0, 3, 1, 2)).to(device)
+        B_train = torch.Tensor(train["view2"].transpose(0, 3, 1, 2)).to(device)
+        A_test = torch.Tensor(test["view1"].transpose(0, 3, 1, 2)).to(device)
+        B_test = torch.Tensor(test["view2"].transpose(0, 3, 1, 2)).to(device)
 
-A_test = torch.Tensor(test["view1"][:1000].transpose(0, 3, 1, 2)).to(device)
-B_test = torch.Tensor(test["view2"][:1000].transpose(0, 3, 1, 2)).to(device)
+        enc_layers = {}
+        enc_layers["conv"] = [
+            ConvLayer(3, 256, 2, 2, 0),
+            ConvLayer(256, 256, 2, 2, 0),
+            ConvLayer(256, 256, 2, 2, 0),
+            ConvLayer(256, 256, 2, 2, 0),
+        ]
+        enc_layers["fc"] = [256 * 4 * 4, 512]
 
-# A_train = torch.Tensor(train["view1"][:50000].reshape(-1, 64 * 64 * 3)).to(device)
-# B_train = torch.Tensor(train["view2"][:50000].reshape(-1, 64 * 64 * 3)).to(device)
+        dec_layers = {}
+        dec_layers["fc"] = [512, 256 * 4 * 4]
+        dec_layers["conv"] = [
+            ConvLayer(256, 256, 2, 2, 0),
+            ConvLayer(256, 256, 2, 2, 0),
+            ConvLayer(256, 256, 2, 2, 0),
+            ConvLayer(256, 3, 2, 2, 0),
+        ]
+    else:
+        A_train = torch.Tensor(train["view1"].reshape(-1, 64 * 64 * 3)).to(device)
+        B_train = torch.Tensor(train["view2"].reshape(-1, 64 * 64 * 3)).to(device)
+        A_test = torch.Tensor(test["view1"].reshape(-1, 64 * 64 * 3)).to(device)
+        B_test = torch.Tensor(test["view2"].reshape(-1, 64 * 64 * 3)).to(device)
+        enc_layers = [1024, 512, 512, 2048, 1024, 512]
+        dec_layers = [512, 1024, 2048, 512, 512, 1024]
 
-# A_test = torch.Tensor(test["view1"][:1000].reshape(-1, 64 * 64 * 3)).to(device)
-# B_test = torch.Tensor(test["view2"][:1000].reshape(-1, 64 * 64 * 3)).to(device)
+    model = SPLICE(
+        n_a=64 * 64 * 3,
+        n_b=64 * 64 * 3,
+        n_private_a=n_private_a,
+        n_private_b=n_private_b,
+        n_shared=n_shared,
+        conv=args["conv"],
+        enc_layers=enc_layers,
+        dec_layers=dec_layers,
+        msr_layers=dec_layers,
+        size=(256, 4, 4),
+    ).to(device)
 
-enc_layers = {}
-enc_layers["conv"] = [
-    ConvLayer(3, 64, 4, 2, 1),
-    ConvLayer(64, 64, 4, 2, 1),
-    ConvLayer(64, 64, 4, 2, 1),
-]
-enc_layers["fc"] = [64 * 8 * 8, 256]
+    # model.load_state_dict(torch.load(filepath))
 
-dec_layers = {}
-dec_layers["fc"] = [256, 64 * 8 * 8]
-dec_layers["conv"] = [
-    ConvLayer(64, 64, 4, 2, 1),
-    ConvLayer(64, 64, 4, 2, 1),
-    ConvLayer(64, 3, 4, 2, 1),
-]
-
-model = SPLICE(
-    n_a=64 * 64 * 3,
-    n_b=64 * 64 * 3,
-    n_priv_a=30,
-    n_priv_b=30,
-    n_shared=2,
-    conv=True,
-    layers_enc=enc_layers,
-    layers_dec=dec_layers,
-    layers_msr=dec_layers,
-    size=(64, 8, 8),
-).to(device)
-
-model = SPLICE(
-    n_a=64 * 64 * 3,
-    n_b=64 * 64 * 3,
-    n_priv_a=30,
-    n_priv_b=30,
-    n_shared=2,
-    conv=False,
-    layers_enc=[200, 200, 100, 100, 100, 100],
-    layers_dec=[200, 200, 100, 100, 100, 100],
-    layers_msr=[200, 200, 100, 100, 100, 100],
-    size=None,
-).to(device)
-
-filepath = os.path.join("..", "..", "results", "models", "sprites", "splice_sprites.pt")
-
-retrain = True
-
-if os.path.exists(filepath) and not retrain:
-    model.load_state_dict(torch.load(filepath))
-else:
     model.fit(
         A_train,
         B_train,
-        B_test,
         A_test,
+        B_test,
         model_filepath=filepath,
-        batch_size=100,
+        batch_size=1000,
         lr=1e-4,
-        epochs=200,
+        epochs=5000,
         end_factor=1,
-        disent_start=0,
-        disent_iter=1,
-        rec_iter=2,
-        msr_iter_restart=30,
-        msr_iter_normal=10,
-        c_disent=0.1,
+        disent_start=250,
+        msr_iter_restart=50,
+        msr_iter_normal=7,
+        c_disent=1,
         device=device,
         weight_decay=1e-3,
-        print_every=1,
-        msr_restart=100,
+        msr_weight_decay=1e-3,
+        checkpoint_freq=10,
+        msr_restart=50000,
     )
-
-# isomap_filepath = os.path.join(
-#     "..",
-#     "..",
-#     "results",
-#     "models",
-#     "sprites",
-#     "splice_sprites_isomap.pt",
-# )

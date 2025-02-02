@@ -6,7 +6,21 @@ from scipy.sparse.csgraph import dijkstra
 from sklearn.cluster import KMeans
 from sklearn.metrics import confusion_matrix
 from sklearn.neighbors import NearestNeighbors
+from torch.utils.data import Dataset
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+class PairedViewDataset(Dataset):
+    def __init__(self, dataset_a, dataset_b):
+        self.dataset_a = dataset_a
+        self.dataset_b = dataset_b
+
+    def __len__(self):
+        return self.dataset_a.shape[0]
+
+    def __getitem__(self, idx):
+        return self.dataset_a[idx], self.dataset_b[idx], idx
 
 
 def update_G(x_a, x_b, model, batch_size):
@@ -41,9 +55,6 @@ def calculate_mnist_accuracy(true_labels, z_train, z_validation):
 
 
 def calculate_isomap_dists(x, n_neighbors, landmark_inds):
-    if x is None:
-        return None
-
     x = x.detach().cpu().numpy()
 
     neigh = NearestNeighbors(n_neighbors=n_neighbors, metric="euclidean").fit(x)
@@ -60,24 +71,8 @@ def calculate_isomap_dists(x, n_neighbors, landmark_inds):
     return torch.Tensor(dists)
 
 
-def iso_loss_func(target, out, z, dists, inds, calc_mse=True):
-    if target is None or dists is None:
-        prox = torch.Tensor([0]).to(device)
-    else:
-        prox = torch.linalg.norm(dists - torch.cdist(z[inds], z), "fro") / np.sqrt(
-            dists.shape[0] * dists.shape[1]
-        )
-
-    if calc_mse:
-        mse = torch.nn.functional.mse_loss(target, out, reduction="mean")
-    else:
-        mse = torch.Tensor([0]).to(device)
-
-    return mse, prox
-
-
 def compute_corr(x1, x2):
-    if x1 == None:
+    if x1 is None:
         return torch.Tensor(0)
 
     # Subtract the mean
