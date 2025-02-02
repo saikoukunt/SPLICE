@@ -4,11 +4,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import tqdm
 from torch.optim.lr_scheduler import LinearLR
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from splice.base import carlosPlus, decoder, encoder
-from splice.utils import calculate_isomap_dists, iso_loss_func
+from splice.utils import PairedViewDataset, calculate_isomap_dists
 
 
 class SPLICECore(nn.Module):
@@ -17,33 +18,65 @@ class SPLICECore(nn.Module):
         n_a,
         n_b,
         n_shared,
-        n_priv_a,
-        n_priv_b,
-        layers_enc,
-        layers_dec,
+        n_private_a,
+        n_private_b,
+        enc_layers,
+        dec_layers,
         conv=False,
-        nl=carlosPlus,
+        act_fn=carlosPlus,
         size=None,
+        device=torch.device("cuda"),
     ):
+        """
+        Initialize the SPLICE model.
+
+        Args:
+            n_a (int): Number of features in view A.
+            n_b (int): Number of features in view B.
+            n_shared (int): Dimensionality of shared latents. Must be greater than 0.
+            n_private_a (int): Dimensionality of view A private latents.
+            n_private_b (int): Dimensionality of view B private latents.
+            enc_layers (list): Hidden layer sizes for the encoder.
+            dec_layers (list): Hidden layer sizes for the decoder.
+            conv (bool, optional): Whether to use convolutional layers. Defaults to False.
+            act_fn (nn.Module, optional): Activation function. Defaults to carlosPlus.
+            size (tuple, optional): If conv is True, the output size of the final
+                convolutional layer in the encoder. Defaults to None.
+            device (torch.device, optional): Device containing model.
+        """
+        # TODO: show conv usage
         super().__init__()
+        if n_shared <= 0:
+            raise ValueError("Shared dimensionality cannot be 0.")
 
         self.n_a = n_a
         self.n_b = n_b
         self.n_shared = n_shared
-        self.n_priv_a = n_priv_a
-        self.n_priv_b = n_priv_b
-        self.nl = nl
+        self.n_private_a = n_private_a
+        self.n_private_b = n_private_b
+        self.act_fn = act_fn
+        self.device = device
 
-        self.F_a = encoder(self.n_a, self.n_priv_a, layers_enc, nl, conv)
-        self.F_a2b = encoder(self.n_a, self.n_shared, layers_enc, nl, conv)
-        self.F_b2a = encoder(self.n_b, self.n_shared, layers_enc, nl, conv)
-        self.F_b = encoder(self.n_b, self.n_priv_b, layers_enc, nl, conv)
+        self.F_a = encoder(self.n_a, self.n_private_a, enc_layers, act_fn, conv)
+        self.F_a2b = encoder(self.n_a, self.n_shared, enc_layers, act_fn, conv)
+        self.F_b2a = encoder(self.n_b, self.n_shared, enc_layers, act_fn, conv)
+        self.F_b = encoder(self.n_b, self.n_private_b, enc_layers, act_fn, conv)
 
         self.G_a = decoder(
-            self.n_priv_a + self.n_shared, self.n_a, layers_dec, nl, conv, size=size
+            self.n_private_a + self.n_shared,
+            self.n_a,
+            dec_layers,
+            act_fn,
+            conv,
+            size=size,
         )
         self.G_b = decoder(
-            self.n_priv_b + self.n_shared, self.n_b, layers_dec, nl, conv, size=size
+            self.n_private_b + self.n_shared,
+            self.n_b,
+            dec_layers,
+            act_fn,
+            conv,
+            size=size,
         )
 
     def forward(self, x_a, x_b):
@@ -69,24 +102,27 @@ class SPLICECore(nn.Module):
 
         return a_hat, b_hat
 
-    def project_to_submanifolds(self, a, b, fix_index=None):
-        z_a, z_b2a, z_a2b, z_b, _, _ = SPLICECore.forward(self, a, b)
+    def project_to_submanifolds(self, x_a, x_b, fix_index=None):
+        """
+        Project data onto the shared and private submanifolds.
+
+        Args:
+            a (torch.Tensor): View A data.
+            b (torch.Tensor): View B data.
+            fix_index (torch.Tensor, optional): Index of sample that should be used to
+                generate the non-varying set of latents. If None, a random index is used.
+                Defaults to None.
+
+        Returns:
+            a_shared_subm (torch.Tensor): Shared submanifold for view A.
+            b_shared_subm (torch.Tensor): Shared submanifold for view B.
+            a_private_subm (torch.Tensor): Private submanifold for view A.
+            b_private_subm (torch.Tensor): Private submanifold for view B.
+        """
+        z_a, z_b2a, z_a2b, z_b, _, _ = SPLICECore.forward(self, x_a, x_b)
 
         if fix_index is None:
-            fix_index = np.random.randint(0, a.shape[0], fix_index)
-
-        a_in = (
-            torch.hstack((torch.ones_like(z_a) * z_a[fix_index], z_b2a))
-            if z_a is not None
-            else z_b2a
-        )
-        b_in = (
-            torch.hstack((torch.ones_like(z_b) * z_b[fix_index], z_a2b))
-            if z_b is not None
-            else z_a2b
-        )
-        a_shared_subm = self.G_a(a_in)
-        b_shared_subm = self.G_b(b_in)
+            fix_index = np.random.randint(0, x_a.shape[0])
 
         if z_a is not None:
             z_a_fix = torch.ones_like(z_a) * z_a[fix_index]
@@ -97,6 +133,8 @@ class SPLICECore(nn.Module):
             a_in = torch.cat([z_a, z_b2a_fix], dim=1)
             a_private_subm = self.G_a(a_in)
         else:
+            a_in = z_b2a
+            a_shared_subm = self.G_a(a_in)
             a_private_subm = None
 
         if z_b is not None:
@@ -108,6 +146,8 @@ class SPLICECore(nn.Module):
             b_in = torch.cat([z_b, z_a2b_fix], dim=1)
             b_private_subm = self.G_b(b_in)
         else:
+            b_in = z_a2b
+            b_shared_subm = self.G_b(b_in)
             b_private_subm = None
 
         return a_shared_subm, b_shared_subm, a_private_subm, b_private_subm
@@ -119,35 +159,34 @@ class SPLICE(SPLICECore):
         n_a,
         n_b,
         n_shared,
-        n_priv_a,
-        n_priv_b,
-        layers_enc,
-        layers_dec,
-        layers_msr,
+        n_private_a,
+        n_private_b,
+        enc_layers,
+        dec_layers,
+        msr_layers,
         conv=False,
-        nl=carlosPlus,
+        act_fn=carlosPlus,
         size=None,
+        device=torch.device("cuda"),
     ):
         super().__init__(
             n_a,
             n_b,
             n_shared,
-            n_priv_a,
-            n_priv_b,
-            layers_enc,
-            layers_dec,
+            n_private_a,
+            n_private_b,
+            enc_layers,
+            dec_layers,
             conv=conv,
-            nl=nl,
+            act_fn=act_fn,
             size=size,
+            device=device,
         )
-        if n_shared == 0:
-            raise ValueError("Shared dimensionality cannot be 0.")
-
         self.conv = conv
         self.size = size
-        self.layers_msr = layers_msr
-        self.M_a2b = decoder(n_priv_a, n_b, layers_msr, nl, conv=conv, size=size)
-        self.M_b2a = decoder(n_priv_b, n_a, layers_msr, nl, conv=conv, size=size)
+        self.msr_layers = msr_layers
+        self.M_a2b = decoder(n_private_a, n_b, msr_layers, act_fn, conv=conv, size=size)
+        self.M_b2a = decoder(n_private_b, n_a, msr_layers, act_fn, conv=conv, size=size)
 
     def forward(self, x_a, x_b):
         z_a, z_b2a, z_a2b, z_b, a_hat, b_hat = super().forward(x_a, x_b)
@@ -167,44 +206,83 @@ class SPLICE(SPLICECore):
         self,
         a_train,
         b_train,
-        a_test,
-        b_test,
+        a_validation,
+        b_validation,
         model_filepath,
-        batch_size,
+        batch_size=None,
         epochs=25000,
         lr=1e-3,
         end_factor=1 / 100,
-        rec_iter=1,
-        disent_iter=1,
-        disent_start=1000,
+        disent_start=0,
         msr_restart=1000,
-        msr_iter_normal=3,
+        msr_iter_normal=5,
         msr_iter_restart=1000,
-        c_disent=0.1,
+        c_disent=1,
         device=torch.device("cuda"),
         weight_decay=0,
-        print_every=500,
+        msr_weight_decay=0,
+        checkpoint_freq=500,
     ):
-        # input validation
-        if not self.conv:
-            if a_train.shape[1] != self.n_a:
-                raise ValueError(
-                    "Training dataset A has the incorrect number of features."
-                )
-            if b_train.shape[1] != self.n_b:
-                raise ValueError(
-                    "Training dataset B has the incorrect number of features."
-                )
-            if a_test.shape[1] != self.n_a:
-                raise ValueError(
-                    "Testing dataset A has the incorrect number of features."
-                )
-            if b_test.shape[1] != self.n_b:
-                raise ValueError(
-                    "Testing dataset B has the incorrect number of features."
-                )
+        """
 
+        Train the SPLICE model.
+
+        Training consists of two steps:
+        1) Training measurement networks to predict one view from the opposite view's
+            private latents -- a well-trained measurement network gives us a
+            measurement of the predictability of one view from the other's private
+            latents.
+        2) Training the encoders and decoders to minimize reconstruction loss and
+            enforce disentanglement. Disentangling is accomplished via an adversarial
+            scheme that encourages the private encoders to minimize the accuracy of the
+            measurement networks.
+        The best model weights (as measured by validation reconstruction loss) are saved
+        periodically.
+
+        Args:
+            a_train (torch.Tensor): Training data for view A.
+            b_train (torch.Tensor): Training data for view B.
+            a_validation (torch.Tensor): Validation data for view A.
+            b_validation (torch.Tensor): Validation data for view B.
+            model_filepath (string): Path to save the model.
+            batch_size (int): Batch size for training.
+            epochs (int, optional): Number of training epochs. Defaults to 25000.
+            lr (float, optional): Learning rate. Defaults to 1e-3.
+            end_factor (float_, optional): Learning rate decay over all epochs. Defaults
+                to 1/100.
+            disent_start (int, optional): Epoch when disentangling begins. Defaults to 0.
+            msr_restart (int, optional): Frequency (in number of epochs) of restarting
+                measurement networks. Defaults to 1000.
+            msr_iter_normal (int, optional): Number of iterations to train measurement
+                networks during non-restart epochs. Defaults to 5.
+            msr_iter_restart (int, optional): Number of iterations to train measurement
+                networks during restart epochs. Defaults to 1000.
+            c_disent (float, optional): Weight of disentangling loss. Defaults to 1.
+            device (torch.Device, optional): Device containing model and input tensors.
+                Defaults to torch.device("cuda").
+            weight_decay (float, optional): Weight decay for encoders and decoders.
+                Defaults to 0.
+            msr_weight_decay (float, optional): Weight decay for measurement networks.
+                Defaults to 0.
+            checkpoint_freq (int, optional): Frequency of saving best model and
+                printing progress. Defaults to 500.
+
+        Raises:
+            ValueError: Incorrect number of features in input datasets.
+
+        Yields:
+            self: Trained SPLICE model.
+        """
+        self.validate_input_data(a_train, b_train, a_validation, b_validation)
+        if batch_size is None:
+            batch_size = a_train.shape[0]
+
+        dataset = PairedViewDataset(a_train, b_train)
+        dataloader = DataLoader(
+            dataset, batch_size=batch_size, shuffle=(batch_size < a_train.shape[0])
+        )
         n_batches = math.ceil(a_train.shape[0] / batch_size)
+
         optimizer = torch.optim.AdamW(
             self.parameters(), lr=lr, weight_decay=weight_decay
         )
@@ -212,251 +290,106 @@ class SPLICE(SPLICECore):
             optimizer, total_iters=epochs, start_factor=1, end_factor=end_factor
         )
 
-        if not (self.n_priv_a == 0 and self.n_priv_b == 0):
-            msr_params = list(self.M_a2b.parameters()) + list(self.M_b2a.parameters())
-            msr_optimizer = torch.optim.AdamW(
-                msr_params, lr=lr, weight_decay=weight_decay
-            )
-
-        a_train_var = a_train.reshape(a_train.shape[0], -1).var(dim=0).sum()
-        b_train_var = b_train.reshape(a_train.shape[0], -1).var(dim=0).sum()
         best_loss = float("inf")
+        bar_format = "{n_fmt}/{total_fmt} |{bar}| {percentage:3.0f}% [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+        for epoch in tqdm(range(epochs), bar_format=bar_format, ncols=80):
+            cumul_msr_loss, cumul_l_rec_a, cumul_l_rec_b, cumul_disent_loss = (
+                self.train_one_epoch(
+                    dataloader,
+                    n_batches,
+                    lr,
+                    disent_start,
+                    msr_restart,
+                    msr_iter_normal,
+                    msr_iter_restart,
+                    c_disent,
+                    device,
+                    msr_weight_decay,
+                    optimizer,
+                    epoch,
+                )
+            )
+            scheduler.step()
 
-        for epoch in range(epochs):
-            cumulative_l_rec_a = 0
-            cumulative_l_rec_b = 0
-            cumulative_measurement_loss = 0
-            cumulative_disentangle_loss = 0
-
-            for batch_start in range(0, a_train.shape[0], batch_size):
-                # 1) train networks to minimize reconstruction loss
-                self.freeze_all_except(
-                    self.F_a, self.F_b, self.F_a2b, self.F_b2a, self.G_a, self.G_b
+            # 3) save best model + print progress
+            if epoch % checkpoint_freq == 0:
+                (
+                    val_reconstruction_loss_a,
+                    val_reconstruction_loss_b,
+                    val_disentangle_loss,
+                    val_measurement_loss,
+                ) = self.calculate_validation_losses(
+                    a_validation, b_validation, batch_size, c_disent, epoch
                 )
 
-                for i in range(rec_iter):
-                    print(
-                        f"Epoch {epoch}, Rec Sample {batch_start}, Iter {i+1}", end="\r"
-                    )
-                    a_batch = a_train[batch_start : batch_start + batch_size]
-                    b_batch = b_train[batch_start : batch_start + batch_size]
-
-                    _, _, _, _, a_hat, b_hat = super().forward(a_batch, b_batch)
-                    l_rec_a = F.mse_loss(a_hat, a_batch)
-                    l_rec_b = F.mse_loss(b_hat, b_batch)
-
-                    if i == rec_iter - 1:
-                        cumulative_l_rec_a += l_rec_a.item()
-                        cumulative_l_rec_b += l_rec_b.item()
-
-                    reconstruction_loss = l_rec_a + l_rec_b
-
-                    optimizer.zero_grad()
-                    reconstruction_loss.backward()
-                    optimizer.step()
-
-                print("                                                   ", end="\r")
-
-                if self.n_priv_a == 0 and self.n_priv_b == 0:
-                    continue
-
-                # 2) train private encoders to minimize disentanglement loss
-                self.freeze_all_except(self.F_a, self.F_b)
-                if epoch > disent_start:
-                    for i in range(disent_iter):
-                        print(f"Epoch {epoch}, Disent Sample {batch_start}", end="\r")
-                        _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
-
-                        l_disent_a = m_a2b.var(dim=0).sum() / b_batch.var(dim=0).sum() if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
-                        l_disent_b = m_b2a.var(dim=0).sum() / a_batch.var(dim=0).sum() if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
-
-                        disentangle_loss = c_disent * (l_disent_a + l_disent_b)
-                        if i == disent_iter - 1:
-                            cumulative_disentangle_loss += disentangle_loss.item()
-
-                        optimizer.zero_grad()
-                        disentangle_loss.backward()
-                        optimizer.step()
-
-                        print(
-                            "                                                   ",
-                            end="\r",
-                        )
-
-            if (epoch >= disent_start) and not (
-                self.n_priv_a == 0 and self.n_priv_b == 0
-            ):
-                # 3) train measurement networks to minimize measurement loss
-                # cold restart periodically to avoid local minima
-                if (epoch % msr_restart == 0) or (epoch == disent_start):
-                    msr_params = self.restart_measurement_networks(device)
-                    msr_optimizer = torch.optim.AdamW(msr_params, lr=lr, weight_decay=weight_decay)  # type: ignore
-                    msr_iter = msr_iter_restart
-                else:
-                    msr_iter = msr_iter_normal
-
-                self.freeze_all_except(self.M_a2b, self.M_b2a)
-
-                for i in range(msr_iter):
-                    for batch_start in range(0, a_train.shape[0], batch_size):
-                        print(
-                            f"Epoch {epoch}, Iter {i+1}, Msr Sample {batch_start}",
-                            end="\r",
-                        )
-                        a_batch = a_train[batch_start : batch_start + batch_size]
-                        b_batch = b_train[batch_start : batch_start + batch_size]
-
-                        _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
-
-                        l_msr_a = F.mse_loss(m_a2b.reshape(a_batch.shape[0], -1), b_batch.reshape(a_batch.shape[0], -1)) if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
-                        l_msr_b = F.mse_loss(m_b2a.reshape(a_batch.shape[0], -1), a_batch.reshape(a_batch.shape[0], -1)) if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
-                        # normalize by variance of target variables and # of targets to make loss scale-invariant
-                        l_msr_a *= self.n_b / b_train_var
-                        l_msr_b *= self.n_a / a_train_var
-
-                        measurement_loss = l_msr_a + l_msr_b
-                        if i == msr_iter - 1:
-                            cumulative_measurement_loss += measurement_loss.item()
-
-                        msr_optimizer.zero_grad()
-                        measurement_loss.backward()
-                        msr_optimizer.step()
-
-                        print(
-                            "                                                   ",
-                            end="\r",
-                        )
-
-            # 4) save best model + print progress
-            if epoch % print_every == 0:
-                _, _, _, _, m_a2b, m_b2a, a_hat, b_hat = self(a_test, b_test)
-
-                test_reconstruction_loss_a = F.mse_loss(a_hat, a_test)
-                test_reconstruction_loss_b = F.mse_loss(b_hat, b_test)
-
-                test_disent_a = m_a2b.reshape(a_test.shape[0], -1).var(dim=0).sum() / b_test.reshape(a_test.shape[0], -1).var(dim=0).sum() if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
-                test_disent_b = m_b2a.reshape(a_test.shape[0], -1).var(dim=0).sum() / a_test.reshape(a_test.shape[0], -1).var(dim=0).sum() if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
-                test_disentangle_loss = test_disent_a + test_disent_b
-
-                test_msr_a = F.mse_loss(m_a2b.reshape(a_test.shape[0], -1), b_test.reshape(a_test.shape[0], -1)) if m_a2b is not None else torch.Tensor([0]).to(device)  # type: ignore
-                test_msr_b = F.mse_loss(m_b2a.reshape(a_test.shape[0], -1), a_test.reshape(a_test.shape[0], -1)) if m_b2a is not None else torch.Tensor([0]).to(device)  # type: ignore
-                test_msr_a *= (
-                    self.n_b / b_test.reshape(a_test.shape[0], -1).var(dim=0).sum()
-                )
-                test_msr_b *= (
-                    self.n_a / a_test.reshape(a_test.shape[0], -1).var(dim=0).sum()
-                )
-
-                test_measurement_loss = (
-                    test_msr_a + test_msr_b
-                    if epoch >= disent_start
-                    else torch.Tensor([0]).to(device)
-                )
-                max_measurement_loss = (
-                    2 if ((self.n_priv_a > 0) and (self.n_priv_b > 0)) else 1
-                )
-                capped_measurement_loss = (  # so small fluctuations above max measurement loss don't cause the model to be saved
-                    test_measurement_loss
-                    if test_measurement_loss < max_measurement_loss
-                    else torch.Tensor([max_measurement_loss]).to(device)
-                )
-
-                test_loss = (
-                    test_reconstruction_loss_a
-                    + test_reconstruction_loss_b
-                    + c_disent * test_disentangle_loss
-                    - 0.1 * capped_measurement_loss
-                )
-
-                if (test_loss < best_loss) and (epoch >= disent_start):
-                    best_loss = test_loss
-                    torch.save(self.state_dict(), model_filepath)
-                    print("saving new best model")
-
-                print(
+                tqdm.write(
                     "Epoch %d:        A reconstruction: %.4f | %.4f \t B reconstruction: %.4f | %.4f \t Disentangling: %.4f | %.4f \t Measurement: %.4f | %.4f"
                     % (
                         epoch,
-                        cumulative_l_rec_a / n_batches,
-                        test_reconstruction_loss_a.item(),
-                        cumulative_l_rec_b / n_batches,
-                        test_reconstruction_loss_b.item(),
-                        cumulative_disentangle_loss / n_batches / c_disent,
-                        test_disentangle_loss.item(),
-                        cumulative_measurement_loss / n_batches,
-                        test_measurement_loss.item(),
-                    )
+                        cumul_l_rec_a,
+                        val_reconstruction_loss_a,
+                        cumul_l_rec_b,
+                        val_reconstruction_loss_b,
+                        cumul_disent_loss,
+                        val_disentangle_loss,
+                        cumul_msr_loss,
+                        val_measurement_loss,
+                    ),
                 )
 
-            scheduler.step()
-
-        # self.load_state_dict(torch.load(model_filepath))
+                validation_loss = val_reconstruction_loss_a + val_reconstruction_loss_b
+                if (validation_loss < best_loss) and (epoch >= disent_start):
+                    best_loss = validation_loss
+                    torch.save(self.state_dict(), model_filepath)
+                    tqdm.write("saving new best model")
 
     def fit_isomap_splice(
         self,
         a_train,
         b_train,
-        a_test,
-        b_test,
+        a_validation,
+        b_validation,
         model_filepath,
         fix_index=None,
+        n_neighbors=100,
+        n_landmarks=100,
+        c_prox=50.0,
+        batch_size=None,
         epochs=25000,
         lr=1e-3,
         end_factor=1 / 100,
-        disent_start=1000,
-        msr_restart=1000,
-        msr_iter_normal=3,
-        msr_iter_restart=1000,
         c_disent=0.1,
-        disent_iter=1,
+        disent_start=0,
+        msr_restart=1000,
+        msr_iter_normal=5,
+        msr_iter_restart=1000,
         device=torch.device("cuda"),
-        weight_decay=0,
-        print_every=500,
-        n_neighbors=100,
-        n_landmarks=100,
-        c_prox=50,
+        weight_decay=0.0,
+        msr_weight_decay=0.0,
+        checkpoint_freq=500,
+        pass2_coeff=1,
     ):
-        # input validation
-        if a_train.shape[1] != self.n_a:
-            raise ValueError("Training dataset A has the incorrect number of features.")
-        if b_train.shape[1] != self.n_b:
-            raise ValueError("Training dataset B has the incorrect number of features.")
-        if a_test.shape[1] != self.n_a:
-            raise ValueError("Testing dataset A has the incorrect number of features.")
-        if b_test.shape[1] != self.n_b:
-            raise ValueError("Testing dataset B has the incorrect number of features.")
+        self.validate_input_data(a_train, b_train, a_validation, b_validation)
+        if batch_size is None:
+            batch_size = a_train.shape[0]
 
-        print("Projecting onto submanifolds")
-        a_shared_subm, b_shared_subm, a_private_subm, b_private_subm = (
-            self.project_to_submanifolds(a_train, b_train)
+        (
+            a_landmarks,
+            b_landmarks,
+            a_private_dists,
+            b_private_dists,
+            a_shared_dists,
+            b_shared_dists,
+        ) = self.calc_isomap_dists(
+            a_train, b_train, fix_index, n_neighbors, n_landmarks, device
         )
 
-        landmark_inds = np.random.choice(a_train.shape[0], n_landmarks, replace=False)
-
-        print("Calculating isomap distances")
-
-        a_private_dists = (
-            calculate_isomap_dists(a_private_subm, n_neighbors, landmark_inds).to(
-                device
-            )
-            if self.n_priv_a > 0
-            else None
+        # train model
+        dataset = PairedViewDataset(a_train, b_train)
+        dataloader = DataLoader(
+            dataset, batch_size=batch_size, shuffle=(batch_size < a_train.shape[0])
         )
-
-        b_private_dists = (
-            calculate_isomap_dists(b_private_subm, n_neighbors, landmark_inds).to(
-                device
-            )
-            if self.n_priv_b > 0
-            else None
-        )
-
-        a_shared_dists = calculate_isomap_dists(
-            a_shared_subm, n_neighbors, landmark_inds
-        ).to(device)
-        b_shared_dists = calculate_isomap_dists(
-            b_shared_subm, n_neighbors, landmark_inds
-        ).to(device)
+        n_batches = math.ceil(a_train.shape[0] / batch_size)
 
         optimizer = torch.optim.AdamW(
             self.parameters(), lr=lr, weight_decay=weight_decay
@@ -465,188 +398,318 @@ class SPLICE(SPLICECore):
             optimizer, total_iters=epochs, start_factor=1, end_factor=end_factor
         )
 
-        msr_params = list(self.M_a2b.parameters()) + list(self.M_b2a.parameters())
-        msr_optimizer = torch.optim.Adam(msr_params, lr=lr, weight_decay=weight_decay)
-
         best_loss = float("inf")
-
-        for epoch in range(epochs):
-            print(f"{epoch}", end="\r")
-
-            # 1) finetune shared encoders and decoders
-            self.freeze_all_except(self.F_a2b, self.F_b2a, self.G_a, self.G_b)
-
-            _, z_b2a, z_a2b, _, a_hat, b_hat = super().forward(a_train, b_train)
-
-            mse_rec_a, prox_shared_a = iso_loss_func(
-                a_train, a_hat, z_b2a, a_shared_dists, landmark_inds
+        bar_format = "{n_fmt}/{total_fmt} |{bar}| {percentage:3.0f}% [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+        for epoch in tqdm(range(epochs), bar_format=bar_format, ncols=80):
+            (
+                cumul_msr_loss,
+                cumul_l_rec_a,
+                cumul_l_rec_b,
+                cumul_disent_loss,
+                cumul_prox_shared_a,
+                cumul_prox_shared_b,
+                cumul_prox_private_a,
+                cumul_prox_private_b,
+            ) = self.train_one_isomap_epoch(
+                dataloader,
+                n_batches,
+                c_prox,
+                lr,
+                c_disent,
+                disent_start,
+                msr_restart,
+                msr_iter_normal,
+                msr_iter_restart,
+                device,
+                msr_weight_decay,
+                a_landmarks,
+                b_landmarks,
+                a_private_dists,
+                b_private_dists,
+                a_shared_dists,
+                b_shared_dists,
+                optimizer,
+                epoch,
+                pass2_coeff,
             )
-            mse_rec_b, prox_shared_b = iso_loss_func(
-                b_train, b_hat, z_a2b, b_shared_dists, landmark_inds
-            )
-
-            shared_loss = (
-                mse_rec_a + mse_rec_b + c_prox * (prox_shared_a + prox_shared_b)
-            )
-
-            optimizer.zero_grad()
-            shared_loss.backward()
-            optimizer.step()
-
-            disentangle_loss = torch.tensor([1]).to(device)
-            measurement_loss = torch.tensor([0]).to(device)
-            if epoch >= disent_start:
-
-                # 2) train measurement networks to minimize measurement loss
-                # cold restart periodically to avoid local minima
-                if epoch % msr_restart == 0:
-                    msr_params = self.restart_measurement_networks(device)
-                    msr_optimizer = torch.optim.AdamW(
-                        msr_params, lr=lr, weight_decay=weight_decay
-                    )
-                    msr_iter = msr_iter_restart
-                else:
-                    msr_iter = msr_iter_normal
-
-                self.freeze_all_except(self.M_a2b, self.M_b2a)
-
-                for i in range(msr_iter):
-                    measurement_loss = torch.tensor([0]).to(device)
-                    _, _, _, _, m_a2b, m_b2a = self.measure(a_train, b_train)
-
-                    l_msr_a = (
-                        F.mse_loss(m_a2b, b_train)
-                        if m_a2b is not None
-                        else torch.Tensor([0]).to(device)
-                    )
-                    l_msr_b = (
-                        F.mse_loss(m_b2a, a_train)
-                        if m_b2a is not None
-                        else torch.Tensor([0]).to(device)
-                    )
-                    # normalize by variance of target variables and # of targets to make loss scale-invariant
-                    l_msr_a *= self.n_b / b_train.var(dim=0).sum()
-                    l_msr_b *= self.n_a / a_train.var(dim=0).sum()
-
-                    measurement_loss = l_msr_a + l_msr_b
-
-                    msr_optimizer.zero_grad()
-                    measurement_loss.backward()
-                    msr_optimizer.step()
-
-                # 3) train private encoders to minimize disentanglement loss
-                self.freeze_all_except(self.F_a, self.F_b, self.G_a, self.G_b)
-
-                for i in range(disent_iter):
-
-                    z_a, _, _, z_b, m_a2b, m_b2a, a_hat, b_hat = self.forward(
-                        a_train, b_train
-                    )
-
-                    mse_rec_a, prox_private_a = iso_loss_func(
-                        a_train, a_hat, z_a, a_private_dists, landmark_inds
-                    )
-                    mse_rec_b, prox_private_b = iso_loss_func(
-                        b_train, b_hat, z_b, b_private_dists, landmark_inds
-                    )
-
-                    l_disent_a = (
-                        m_a2b.var(dim=0).sum() / b_train.var(dim=0).sum()
-                        if m_a2b is not None
-                        else torch.Tensor([0]).to(device)
-                    )
-                    l_disent_b = (
-                        m_b2a.var(dim=0).sum() / a_train.var(dim=0).sum()
-                        if m_b2a is not None
-                        else torch.Tensor([0]).to(device)
-                    )
-
-                    disentangle_loss = l_disent_a + l_disent_b
-                    private_loss = (
-                        c_prox * (prox_private_a + prox_private_b)
-                        + c_disent * (l_disent_a + l_disent_b)
-                        + mse_rec_a
-                        + mse_rec_b
-                    )
-
-                    optimizer.zero_grad()
-                    private_loss.backward()
-                    optimizer.step()
-
-            # 4) save best model + print progress
-            if epoch % print_every == 0:
-                _, _, _, _, m_a2b, m_b2a, a_hat, b_hat = self.forward(a_test, b_test)
-
-                test_reconstruction_loss_a = F.mse_loss(a_hat, a_test)
-                test_reconstruction_loss_b = F.mse_loss(b_hat, b_test)
-
-                test_disent_a = (
-                    m_a2b.var(dim=0).sum() / b_test.var(dim=0).sum()
-                    if m_a2b is not None
-                    else torch.Tensor([0]).to(device)
-                )
-                test_disent_b = (
-                    m_b2a.var(dim=0).sum() / a_test.var(dim=0).sum()
-                    if m_b2a is not None
-                    else torch.Tensor([0]).to(device)
-                )
-                test_disentangle_loss = test_disent_a + test_disent_b
-
-                test_msr_a = (
-                    F.mse_loss(m_a2b, b_test)
-                    if m_a2b is not None
-                    else torch.Tensor([0]).to(device)
-                )
-                test_msr_b = (
-                    F.mse_loss(m_b2a, a_test)
-                    if m_b2a is not None
-                    else torch.Tensor([0]).to(device)
-                )
-                test_msr_a *= self.n_b / b_test.var(dim=0).sum()
-                test_msr_b *= self.n_a / a_test.var(dim=0).sum()
-
-                test_measurement_loss = (
-                    test_msr_a + test_msr_b
-                    if epoch >= disent_start
-                    else torch.Tensor([0]).to(device)
-                )
-
-                test_loss = (
-                    test_reconstruction_loss_a
-                    + test_reconstruction_loss_b
-                    + c_disent * test_disentangle_loss
-                    + c_prox
-                    * (prox_private_a + prox_private_b + prox_shared_a + prox_shared_b)
-                    - 0.1 * test_measurement_loss
-                )
-
-                if (test_loss < best_loss) and (epoch >= disent_start):
-                    best_loss = test_loss
-                    torch.save(self.state_dict(), model_filepath)
-                    print("saving new best model")
-
-                print(
-                    "Epoch: %d \t A reconstruction: %.4f | %.4f \t B reconstruction: %.4f | %.4f \t Disentangling: %.4f | %.4f \t Measurement: %.4f | %.4f \t Isomap A: %.4f | %.4f \t Isomap B: %.4f | %.4f"
-                    % (
-                        epoch,
-                        mse_rec_a.item(),
-                        test_reconstruction_loss_a.item(),
-                        mse_rec_b.item(),
-                        test_reconstruction_loss_b.item(),
-                        disentangle_loss.item(),
-                        test_disentangle_loss.item(),
-                        measurement_loss.item(),
-                        test_measurement_loss.item(),
-                        prox_shared_a.item(),
-                        prox_private_a.item(),
-                        prox_shared_b.item(),
-                        prox_private_b.item(),
-                    )
-                )
-
             scheduler.step()
 
-        # self.load_state_dict(torch.load(model_filepath))
+            # 3) save best model + print progress
+            if epoch % checkpoint_freq == 0:
+                (
+                    val_reconstruction_loss_a,
+                    val_reconstruction_loss_b,
+                    val_disentangle_loss,
+                    val_measurement_loss,
+                ) = self.calculate_validation_losses(
+                    a_validation, b_validation, batch_size, c_disent, epoch
+                )
+
+                tqdm.write(
+                    "Epoch %d:        A reconstruction: %.4f | %.4f \t B reconstruction: %.4f | %.4f \t Disentangling: %.4f | %.4f \t Measurement: %.4f | %.4f \t Private Isomap: %.4f | %.4f \t Shared Isomap: %.4f | %.4f"
+                    % (
+                        epoch,
+                        cumul_l_rec_a,
+                        val_reconstruction_loss_a,
+                        cumul_l_rec_b,
+                        val_reconstruction_loss_b,
+                        cumul_disent_loss,
+                        val_disentangle_loss,
+                        cumul_msr_loss,
+                        val_measurement_loss,
+                        cumul_prox_private_a,
+                        cumul_prox_private_b,
+                        cumul_prox_shared_a,
+                        cumul_prox_shared_b,
+                    ),
+                )
+
+                validation_loss = (
+                    val_reconstruction_loss_a
+                    + val_reconstruction_loss_b
+                    + cumul_prox_private_a
+                    + cumul_prox_private_b
+                    + cumul_prox_shared_a
+                    + cumul_prox_shared_b
+                )
+                if (validation_loss < best_loss) and (epoch >= disent_start):
+                    best_loss = validation_loss
+                    torch.save(self.state_dict(), model_filepath)
+                    tqdm.write("saving new best model")
+
+    def train_one_epoch(
+        self,
+        dataloader,
+        n_batches,
+        lr,
+        disent_start,
+        msr_restart,
+        msr_iter_normal,
+        msr_iter_restart,
+        c_disent,
+        device,
+        msr_weight_decay,
+        optimizer,
+        epoch,
+    ):
+        cumul_msr_loss = torch.Tensor([0]).to(device)
+        cumul_l_rec_a = torch.Tensor([0]).to(device)
+        cumul_l_rec_b = torch.Tensor([0]).to(device)
+        cumul_disent_loss = torch.Tensor([0]).to(device)
+
+        # Pass 1) train measurement networks
+        if (epoch >= disent_start) and not (
+            self.n_private_a == 0 and self.n_private_b == 0
+        ):
+            # cold restart measurement networks periodically to avoid local minima
+            if (epoch % msr_restart == 0) or (epoch == disent_start):
+                msr_params = self.restart_measurement_networks(device)
+                self.msr_optimizer = torch.optim.AdamW(
+                    msr_params, lr=lr, weight_decay=msr_weight_decay
+                )
+                msr_iter = msr_iter_restart
+            else:
+                msr_iter = msr_iter_normal
+
+            self.freeze_all_except(self.M_a2b, self.M_b2a)
+
+            for i in range(msr_iter):
+                for step, (a_batch, b_batch, idx) in enumerate(dataloader):
+                    _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
+                    measurement_loss, norm_msr_loss = self.msr_loss(
+                        a_batch, b_batch, m_a2b, m_b2a
+                    )
+                    self.msr_optimizer.zero_grad()
+                    measurement_loss.backward()
+                    self.msr_optimizer.step()
+
+                    if i == msr_iter - 1:
+                        cumul_msr_loss += 1 / n_batches * norm_msr_loss
+                    del a_batch, b_batch, m_a2b, m_b2a
+                    torch.cuda.empty_cache()
+
+            # Pass 2) train encoders and decoders
+        torch.cuda.empty_cache()
+        self.freeze_all_except(
+            self.F_a, self.F_b, self.F_a2b, self.F_b2a, self.G_a, self.G_b
+        )
+
+        for step, (a_batch, b_batch, idx) in enumerate(dataloader):
+            _, _, _, _, m_a2b, m_b2a, a_hat, b_hat = self(a_batch, b_batch)
+            l_rec_a = F.mse_loss(a_hat, a_batch)
+            l_rec_b = F.mse_loss(b_hat, b_batch)
+            reconstruction_loss = l_rec_a + l_rec_b
+            disentangle_loss, norm_disent_loss = self.disent_loss(
+                disent_start,
+                c_disent,
+                epoch,
+                a_batch,
+                b_batch,
+                m_a2b,
+                m_b2a,
+            )
+            pass2_loss = reconstruction_loss + disentangle_loss
+            optimizer.zero_grad()
+            pass2_loss.backward()
+            optimizer.step()
+
+            cumul_l_rec_a += 1 / n_batches * l_rec_a
+            cumul_l_rec_b += 1 / n_batches * l_rec_b
+            cumul_disent_loss += 1 / n_batches * norm_disent_loss
+            del _, a_batch, b_batch, m_a2b, m_b2a, a_hat, b_hat
+            torch.cuda.empty_cache()
+        return cumul_msr_loss, cumul_l_rec_a, cumul_l_rec_b, cumul_disent_loss
+
+    def train_one_isomap_epoch(
+        self,
+        dataloader,
+        n_batches,
+        c_prox,
+        lr,
+        c_disent,
+        disent_start,
+        msr_restart,
+        msr_iter_normal,
+        msr_iter_restart,
+        device,
+        msr_weight_decay,
+        a_landmarks,
+        b_landmarks,
+        a_private_dists,
+        b_private_dists,
+        a_shared_dists,
+        b_shared_dists,
+        optimizer,
+        epoch,
+        pass2_coeff,
+    ):
+        cumul_msr_loss = torch.Tensor([0]).to(device)
+        cumul_l_rec_a = torch.Tensor([0]).to(device)
+        cumul_l_rec_b = torch.Tensor([0]).to(device)
+        cumul_disent_loss = torch.Tensor([0]).to(device)
+        cumul_prox_shared_a = torch.Tensor([0]).to(device)
+        cumul_prox_shared_b = torch.Tensor([0]).to(device)
+        cumul_prox_private_a = torch.Tensor([0]).to(device)
+        cumul_prox_private_b = torch.Tensor([0]).to(device)
+
+        # Pass 1) train measurement networks
+        norm_msr_loss = torch.tensor([0]).to(device)
+        if (epoch >= disent_start) and not (
+            self.n_private_a == 0 and self.n_private_b == 0
+        ):
+            # cold restart periodically to avoid local minima
+            if (epoch % msr_restart == 0) or (epoch == disent_start):
+                msr_params = self.restart_measurement_networks(device)
+                self.msr_optimizer = torch.optim.AdamW(
+                    msr_params, lr=lr, weight_decay=msr_weight_decay
+                )
+                msr_iter = msr_iter_restart
+            else:
+                msr_iter = msr_iter_normal
+
+            self.freeze_all_except(self.M_a2b, self.M_b2a)
+
+            for i in range(msr_iter):
+                for step, (a_batch, b_batch, idx) in enumerate(dataloader):
+                    _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
+                    measurement_loss, norm_msr_loss = self.msr_loss(
+                        a_batch, b_batch, m_a2b, m_b2a
+                    )
+                    self.msr_optimizer.zero_grad()
+                    measurement_loss.backward()
+                    self.msr_optimizer.step()
+
+                    if i == msr_iter - 1:
+                        cumul_msr_loss += 1 / n_batches * norm_msr_loss
+                    del a_batch, b_batch, m_a2b, m_b2a
+                    torch.cuda.empty_cache()
+
+            # Pass 2) train encoders and decoders
+        torch.cuda.empty_cache()
+        self.freeze_all_except(
+            self.F_a, self.F_b, self.F_a2b, self.F_b2a, self.G_a, self.G_b
+        )
+
+        for step, (a_batch, b_batch, idx) in enumerate(dataloader):
+            z_a, z_b2a, z_a2b, z_b, m_a2b, m_b2a, a_hat, b_hat = self(a_batch, b_batch)
+            zl_a, zl_b2a, zl_a2b, zl_b = self.encode(a_landmarks, b_landmarks)
+
+            _, prox_private_a = self.iso_loss_func(
+                a_batch,
+                a_hat,
+                a_private_dists,
+                idx,
+                zl_a,
+                z_a,
+                calc_mse=False,
+            )
+            _, prox_private_b = self.iso_loss_func(
+                b_batch,
+                b_hat,
+                b_private_dists,
+                idx,
+                zl_b,
+                z_b,
+                calc_mse=False,
+            )
+            mse_rec_a, prox_shared_a = self.iso_loss_func(
+                a_batch,
+                a_hat,
+                a_shared_dists,
+                idx,
+                zl_b2a,
+                z_b2a,
+            )
+            mse_rec_b, prox_shared_b = self.iso_loss_func(
+                b_batch,
+                b_hat,
+                b_shared_dists,
+                idx,
+                zl_a2b,
+                z_a2b,
+            )
+            reconstruction_loss = mse_rec_a + mse_rec_b
+            prox_loss = c_prox * (
+                prox_private_a + prox_private_b + prox_shared_a + prox_shared_b
+            )
+            disentangle_loss, norm_disent_loss = self.disent_loss(
+                disent_start,
+                c_disent,
+                epoch,
+                a_batch,
+                b_batch,
+                m_a2b,
+                m_b2a,
+            )
+            pass2_loss = (
+                pass2_coeff * reconstruction_loss
+                + pass2_coeff * disentangle_loss
+                + prox_loss
+            )
+            optimizer.zero_grad()
+            pass2_loss.backward()
+            optimizer.step()
+
+            cumul_l_rec_a += 1 / n_batches * mse_rec_a
+            cumul_l_rec_b += 1 / n_batches * mse_rec_b
+            cumul_disent_loss += 1 / n_batches * norm_disent_loss
+            cumul_prox_private_a += 1 / n_batches * prox_private_a
+            cumul_prox_private_b += 1 / n_batches * prox_private_b
+            cumul_prox_shared_a += 1 / n_batches * prox_shared_a
+            cumul_prox_shared_b += 1 / n_batches * prox_shared_b
+            del a_batch, b_batch, z_a, z_b2a, z_a2b, z_b, m_a2b, m_b2a, a_hat, b_hat
+            del zl_a, zl_b2a, zl_a2b, zl_b
+            torch.cuda.empty_cache()
+        return (
+            cumul_msr_loss,
+            cumul_l_rec_a,
+            cumul_l_rec_b,
+            cumul_disent_loss,
+            cumul_prox_shared_a,
+            cumul_prox_shared_b,
+            cumul_prox_private_a,
+            cumul_prox_private_b,
+        )
 
     def freeze_all_except(self, *args):
         for param in self.parameters():
@@ -657,18 +720,18 @@ class SPLICE(SPLICECore):
 
     def restart_measurement_networks(self, device):
         self.M_a2b = decoder(
-            self.n_priv_a,
+            self.n_private_a,
             self.n_b,
-            self.layers_msr,
-            self.nl,
+            self.msr_layers,
+            self.act_fn,
             conv=self.conv,
             size=self.size,
         ).to(device)
         self.M_b2a = decoder(
-            self.n_priv_b,
+            self.n_private_b,
             self.n_a,
-            self.layers_msr,
-            self.nl,
+            self.msr_layers,
+            self.act_fn,
             conv=self.conv,
             size=self.size,
         ).to(device)
@@ -679,23 +742,27 @@ class SPLICE(SPLICECore):
 
     def msr_loss(self, a_batch, b_batch, m_a2b, m_b2a):
         """
-        Calculate the normalized loss for measurement networks.
+                Calculate the normalized loss for measurement networks.
 
-        Normalized loss is obtained by dividing the mean squared error by the sum of the
-        variance of the target data and multiplying by the number of features. The
-        resulting loss will be between 0 and 1 for each view.
+                Normalized loss is obtained by dividing the mean squared error by the sum of the
+                variance of the target data and multiplying by the number of features. The
+                resulting loss will be between 0 and 1 for each view.
 
-        Args:
-            a_batch (torch.Tensor): Data for view A.
-            b_batch (torch.Tensor): Data for view B.
-            m_a2b (torch.Tensor): Measurement network prediction of view B.
-            m_b2a (torch.Tensor): Measurement network prediction of view A.
+                Args:
+                    a_batch (torch.Tensor): Data for view A.
+                    b_batch (torch.Tensor): Data for view B.
+                    m_a2b (torch.Tensor): Measurement network prediction of view B.
+                    m_b2a (torch.Tensor): Measurement network prediction of view A.
 
-        Returns:
-            measurement_loss (torch.Tensor): Raw measurement loss.
-            norm_msr_loss (torch.Tensor): Normalized measurement loss. This will be
-                between 0 and 2 is both views have private dimensionality > 0, and
-                between 0 and 1 if only one view does.
+                Returns:
+        <<<<<<< HEAD
+                    measurement_loss (torch.Tensor): Raw measurement loss.
+                    norm_msr_loss (torch.Tensor): Normalized measurement loss. This will be
+                        between 0 and 2 is both views have private dimensionality > 0, and
+                        between 0 and 1 if only one view does.
+        =======
+                    measurement_loss (torch.Tensor): Normalized measurement loss.
+        >>>>>>> 4a049f28d6fc17044fd307295fe58e00fcf14643
         """
         # reshape to 2D if necessary
         if len(a_batch.shape) != 2:

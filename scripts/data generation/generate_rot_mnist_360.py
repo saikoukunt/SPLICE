@@ -7,7 +7,7 @@ from sklearn.datasets import fetch_openml
 
 def rot_digit(m, angle=None):
     """
-    Returns the digit/image "m" by a random angle [-45,45]deg
+    Returns the digit/image "m" by a random angle deg
     clips it to MNIST size
     and returns it flattened into (28*28,) shape
     """
