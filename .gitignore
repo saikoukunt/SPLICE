@@ -9,3 +9,5 @@ DMVAE/**/testing.ipynb
 figures/
 multiview_and_self-supervision
 Multiview Mnist/
+results/models/sprites
+.vscode/
