@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import tqdm
 from torch.optim.lr_scheduler import LinearLR
 
 from splice.base import carlosPlus, decoder, encoder
@@ -88,13 +89,23 @@ class SPLICECore(nn.Module):
         b_shared_subm = self.G_b(b_in)
 
         if z_a is not None:
-            a_in = torch.cat([z_a, torch.ones_like(z_b2a) * z_b2a[fix_index]], dim=1)
+            z_a_fix = torch.ones_like(z_a) * z_a[fix_index]
+            a_in = torch.cat([z_a_fix, z_b2a], dim=1)
+            a_shared_subm = self.G_a(a_in)
+
+            z_b2a_fix = torch.ones_like(z_b2a) * z_b2a[fix_index]
+            a_in = torch.cat([z_a, z_b2a_fix], dim=1)
             a_private_subm = self.G_a(a_in)
         else:
             a_private_subm = None
 
         if z_b is not None:
-            b_in = torch.cat([z_b, torch.ones_like(z_a2b) * z_a2b[fix_index]], dim=1)
+            z_b_fix = torch.ones_like(z_b) * z_b[fix_index]
+            b_in = torch.cat([z_b_fix, z_a2b], dim=1)
+            b_shared_subm = self.G_b(b_in)
+
+            z_a2b_fix = torch.ones_like(z_a2b) * z_a2b[fix_index]
+            b_in = torch.cat([z_b, z_a2b_fix], dim=1)
             b_private_subm = self.G_b(b_in)
         else:
             b_private_subm = None
@@ -665,3 +676,231 @@ class SPLICE(SPLICECore):
         msr_params = list(self.M_a2b.parameters()) + list(self.M_b2a.parameters())
 
         return msr_params
+
+    def msr_loss(self, a_batch, b_batch, m_a2b, m_b2a):
+        """
+        Calculate the normalized loss for measurement networks.
+
+        Normalized loss is obtained by dividing the mean squared error by the sum of the
+        variance of the target data and multiplying by the number of features. The
+        resulting loss will be between 0 and 1 for each view.
+
+        Args:
+            a_batch (torch.Tensor): Data for view A.
+            b_batch (torch.Tensor): Data for view B.
+            m_a2b (torch.Tensor): Measurement network prediction of view B.
+            m_b2a (torch.Tensor): Measurement network prediction of view A.
+
+        Returns:
+            measurement_loss (torch.Tensor): Raw measurement loss.
+            norm_msr_loss (torch.Tensor): Normalized measurement loss. This will be
+                between 0 and 2 is both views have private dimensionality > 0, and
+                between 0 and 1 if only one view does.
+        """
+        # reshape to 2D if necessary
+        if len(a_batch.shape) != 2:
+            if m_a2b is not None:
+                m_a2b = m_a2b.reshape(-1, self.n_b)
+            if m_b2a is not None:
+                m_b2a = m_b2a.reshape(-1, self.n_a)
+            a_batch = a_batch.reshape(-1, self.n_a)
+            b_batch = b_batch.reshape(-1, self.n_b)
+
+        l_msr_a = (
+            F.mse_loss(m_a2b, b_batch)
+            if m_a2b is not None
+            else torch.Tensor([0]).to(self.device)
+        )
+        l_msr_b = (
+            F.mse_loss(m_b2a, a_batch)
+            if m_b2a is not None
+            else torch.Tensor([0]).to(self.device)
+        )
+        norm_msr_a = l_msr_a * self.n_b / b_batch.var(dim=0).sum()
+        norm_msr_b = l_msr_b * self.n_a / a_batch.var(dim=0).sum()
+        return l_msr_a + l_msr_b, norm_msr_a + norm_msr_b
+
+    def disent_loss(
+        self, disent_start, c_disent, epoch, a_batch, b_batch, m_a2b, m_b2a
+    ):
+        """_summary_
+
+        Args:
+            disent_start (_type_): _description_
+            c_disent (_type_): _description_
+            epoch (_type_): _description_
+            a_batch (_type_): _description_
+            b_batch (_type_): _description_
+            m_a2b (_type_): _description_
+            m_b2a (_type_): _description_
+
+        Returns:
+            _type_: _description_
+        """
+        if epoch >= disent_start and not (
+            self.n_private_a == 0 and self.n_private_b == 0
+        ):
+            if m_a2b is not None:
+                m_a2b = m_a2b.reshape(-1, self.n_b)
+            if m_b2a is not None:
+                m_b2a = m_b2a.reshape(-1, self.n_a)
+            a_batch = a_batch.reshape(-1, self.n_a)
+            b_batch = b_batch.reshape(-1, self.n_b)
+
+            l_disent_a = (
+                ((m_a2b - b_batch.mean(dim=0)) ** 2).mean()
+                if m_a2b is not None
+                else torch.Tensor([0]).to(self.device)
+            )
+            l_disent_b = (
+                ((m_b2a - a_batch.mean(dim=0)) ** 2).mean()
+                if m_b2a is not None
+                else torch.Tensor([0]).to(self.device)
+            )
+            norm_disent_a = l_disent_a / b_batch.var(dim=0).mean()
+            norm_disent_b = l_disent_b / a_batch.var(dim=0).mean()
+        else:
+            l_disent_a = torch.Tensor([0]).to(self.device)
+            l_disent_b = torch.Tensor([0]).to(self.device)
+            norm_disent_a = torch.Tensor([0]).to(self.device)
+            norm_disent_b = torch.Tensor([0]).to(self.device)
+
+        disentangle_loss = c_disent * (l_disent_a + l_disent_b)
+        return disentangle_loss, norm_disent_a + norm_disent_b
+
+    def calc_isomap_dists(
+        self, a_train, b_train, fix_index, n_neighbors, n_landmarks, device
+    ):
+        tqdm.write("Projecting onto submanifolds")
+        a_shared_subm, b_shared_subm, a_private_subm, b_private_subm = (
+            self.project_to_submanifolds(a_train, b_train, fix_index)
+        )
+
+        tqdm.write("Calculating isomap distances")
+        landmark_inds = np.random.choice(a_train.shape[0], n_landmarks, replace=False)
+        a_landmarks = a_train[landmark_inds]
+        b_landmarks = b_train[landmark_inds]
+
+        a_private_dists = (
+            calculate_isomap_dists(a_private_subm, n_neighbors, landmark_inds).to(
+                device
+            )
+            if self.n_private_a > 0
+            else None
+        )
+        b_private_dists = (
+            calculate_isomap_dists(b_private_subm, n_neighbors, landmark_inds).to(
+                device
+            )
+            if self.n_private_b > 0
+            else None
+        )
+        a_shared_dists = calculate_isomap_dists(
+            a_shared_subm, n_neighbors, landmark_inds
+        ).to(device)
+        b_shared_dists = calculate_isomap_dists(
+            b_shared_subm, n_neighbors, landmark_inds
+        ).to(device)
+
+        return (
+            a_landmarks,
+            b_landmarks,
+            a_private_dists,
+            b_private_dists,
+            a_shared_dists,
+            b_shared_dists,
+        )
+
+    def iso_loss_func(
+        self,
+        target,
+        out,
+        dists,
+        batch_inds,
+        z_landmarks,
+        z_batch,
+        calc_mse=True,
+    ):
+        """_summary_
+
+        Args:
+            target (_type_): _description_
+            out (_type_): _description_
+            z (_type_): _description_
+            dists (_type_): _description_
+            inds (_type_): _description_
+            calc_mse (bool, optional): _description_. Defaults to True.
+
+        Returns:
+            _type_: _description_
+        """
+        if target is None or dists is None:
+            prox = torch.Tensor([0]).to(self.device)
+        else:
+            dists = dists[:, batch_inds]
+            prox = torch.linalg.norm(
+                dists - torch.cdist(z_landmarks, z_batch), "fro"
+            ) / np.sqrt(dists.shape[0] * dists.shape[1])
+
+        if calc_mse:
+            mse = torch.nn.functional.mse_loss(target, out, reduction="mean")
+        else:
+            mse = torch.Tensor([0]).to(self.device)
+
+        return mse, prox
+
+    def calculate_validation_losses(
+        self, a_validation, b_validation, batch_size, c_disent, epoch
+    ):
+        val_reconstruction_loss_a = torch.tensor([0.0]).to(self.device)
+        val_reconstruction_loss_b = torch.tensor([0.0]).to(self.device)
+        val_disentangle_loss = torch.tensor([0.0]).to(self.device)
+        val_measurement_loss = torch.tensor([0.0]).to(self.device)
+
+        with torch.no_grad():
+            n_batches = math.ceil(a_validation.shape[0] / batch_size)
+            for batch_start in range(0, a_validation.shape[0], batch_size):
+                a_batch = a_validation[batch_start : batch_start + batch_size]
+                b_batch = b_validation[batch_start : batch_start + batch_size]
+
+                _, _, _, _, m_a2b, m_b2a, a_hat, b_hat = self(a_batch, b_batch)
+                val_reconstruction_loss_a += F.mse_loss(a_hat, a_batch)
+                val_reconstruction_loss_b += F.mse_loss(b_hat, b_batch)
+                val_disentangle_loss += self.disent_loss(
+                    0,
+                    c_disent,
+                    epoch,
+                    a_batch,
+                    b_batch,
+                    m_a2b,
+                    m_b2a,
+                )[1]
+                val_measurement_loss += self.msr_loss(a_batch, b_batch, m_a2b, m_b2a)[1]
+                del _, m_a2b, m_b2a, a_hat, b_hat
+                torch.cuda.empty_cache()
+
+        val_reconstruction_loss_a = val_reconstruction_loss_a.item() / n_batches
+        val_reconstruction_loss_b = val_reconstruction_loss_b.item() / n_batches
+        val_disentangle_loss = val_disentangle_loss.item() / n_batches
+        val_measurement_loss = val_measurement_loss.item() / n_batches
+        return (
+            val_reconstruction_loss_a,
+            val_reconstruction_loss_b,
+            val_disentangle_loss,
+            val_measurement_loss,
+        )
+
+    def validate_input_data(self, a_train, b_train, a_validation, b_validation):
+        if not self.conv:
+            if a_train.shape[1] != self.n_a:
+                raise ValueError("Incorrect number of features in training dataset A.")
+            if b_train.shape[1] != self.n_b:
+                raise ValueError("Incorrect number of features in training dataset B.")
+            if a_validation.shape[1] != self.n_a:
+                raise ValueError("Incorrect number of features in testing dataset A.")
+            if b_validation.shape[1] != self.n_b:
+                raise ValueError("Incorrect number of features in testing dataset B.")
+        if (a_train.shape[0] != b_train.shape[0]) or (
+            a_validation.shape[0] != b_validation.shape[0]
+        ):
+            raise ValueError("View A and B must have the same number of samples.")
