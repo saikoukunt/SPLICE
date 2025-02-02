@@ -2,16 +2,14 @@ import math
 
 import numpy as np
 import torch
-
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import LinearLR
 from torch.utils.data import DataLoader
-
 from tqdm import tqdm
 
 from splice.base import carlosPlus, decoder, encoder
-from splice.utils import calculate_isomap_dists, PairedViewDataset
+from splice.utils import PairedViewDataset, calculate_isomap_dists
 
 
 class SPLICECore(nn.Module):
@@ -369,6 +367,7 @@ class SPLICE(SPLICECore):
         weight_decay=0.0,
         msr_weight_decay=0.0,
         checkpoint_freq=500,
+        pass2_coeff=1,
     ):
         self.validate_input_data(a_train, b_train, a_validation, b_validation)
         if batch_size is None:
@@ -431,6 +430,7 @@ class SPLICE(SPLICECore):
                 b_shared_dists,
                 optimizer,
                 epoch,
+                pass2_coeff,
             )
             scheduler.step()
 
@@ -581,6 +581,7 @@ class SPLICE(SPLICECore):
         b_shared_dists,
         optimizer,
         epoch,
+        pass2_coeff,
     ):
         cumul_msr_loss = torch.Tensor([0]).to(device)
         cumul_l_rec_a = torch.Tensor([0]).to(device)
@@ -680,7 +681,11 @@ class SPLICE(SPLICECore):
                 m_a2b,
                 m_b2a,
             )
-            pass2_loss = reconstruction_loss + disentangle_loss + prox_loss
+            pass2_loss = (
+                pass2_coeff * reconstruction_loss
+                + pass2_coeff * disentangle_loss
+                + prox_loss
+            )
             optimizer.zero_grad()
             pass2_loss.backward()
             optimizer.step()
@@ -688,10 +693,10 @@ class SPLICE(SPLICECore):
             cumul_l_rec_a += 1 / n_batches * mse_rec_a
             cumul_l_rec_b += 1 / n_batches * mse_rec_b
             cumul_disent_loss += 1 / n_batches * norm_disent_loss
-            cumul_prox_private_a += 1 / n_batches * prox_private_a**2
-            cumul_prox_private_b += 1 / n_batches * prox_private_b**2
-            cumul_prox_shared_a += 1 / n_batches * prox_shared_a**2
-            cumul_prox_shared_b += 1 / n_batches * prox_shared_b**2
+            cumul_prox_private_a += 1 / n_batches * prox_private_a
+            cumul_prox_private_b += 1 / n_batches * prox_private_b
+            cumul_prox_shared_a += 1 / n_batches * prox_shared_a
+            cumul_prox_shared_b += 1 / n_batches * prox_shared_b
             del a_batch, b_batch, z_a, z_b2a, z_a2b, z_b, m_a2b, m_b2a, a_hat, b_hat
             del zl_a, zl_b2a, zl_a2b, zl_b
             torch.cuda.empty_cache()
@@ -902,7 +907,7 @@ class SPLICE(SPLICECore):
         else:
             mse = torch.Tensor([0]).to(self.device)
 
-        return mse, torch.sqrt(prox)
+        return mse, prox
 
     def calculate_validation_losses(
         self, a_validation, b_validation, batch_size, c_disent, epoch

@@ -123,7 +123,6 @@ class encoder(nn.Module):
                     for i in range(len(fcLayers) - 1):
                         self.layers.append(nn.Linear(fcLayers[i], fcLayers[i + 1]))
                         self.layers.append(nl(True))
-
                     self.layers.append(nn.Linear(fcLayers[-1], z_dim))
 
     def forward(self, x):
