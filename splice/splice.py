@@ -338,7 +338,11 @@ class SPLICE(SPLICECore):
                 )
 
                 validation_loss = val_reconstruction_loss_a + val_reconstruction_loss_b
-                if (validation_loss < best_loss) and (epoch >= disent_start):
+                if (
+                    (validation_loss < best_loss)
+                    and (epoch >= disent_start)
+                    and (model_filepath is not None)
+                ):
                     best_loss = validation_loss
                     torch.save(self.state_dict(), model_filepath)
                     tqdm.write("saving new best model")
@@ -472,7 +476,11 @@ class SPLICE(SPLICECore):
                     + cumul_prox_shared_a
                     + cumul_prox_shared_b
                 )
-                if (validation_loss < best_loss) and (epoch >= disent_start):
+                if (
+                    (validation_loss < best_loss)
+                    and (epoch >= disent_start)
+                    and (model_filepath is not None)
+                ):
                     best_loss = validation_loss
                     torch.save(self.state_dict(), model_filepath)
                     tqdm.write("saving new best model")
@@ -497,6 +505,7 @@ class SPLICE(SPLICECore):
         cumul_l_rec_b = torch.Tensor([0]).to(device)
         cumul_disent_loss = torch.Tensor([0]).to(device)
 
+        self.freeze_all_except(self.M_a2b, self.M_b2a)
         # Pass 1) train measurement networks
         if (epoch >= disent_start) and not (
             self.n_private_a == 0 and self.n_private_b == 0
@@ -510,8 +519,6 @@ class SPLICE(SPLICECore):
                 msr_iter = msr_iter_restart
             else:
                 msr_iter = msr_iter_normal
-
-            self.freeze_all_except(self.M_a2b, self.M_b2a)
 
             for i in range(msr_iter):
                 for step, (a_batch, b_batch, idx) in enumerate(dataloader):
@@ -528,34 +535,43 @@ class SPLICE(SPLICECore):
                     del a_batch, b_batch, m_a2b, m_b2a
                     torch.cuda.empty_cache()
 
-            # Pass 2) train encoders and decoders
+        # Pass 2) train encoders and decoders
         torch.cuda.empty_cache()
         self.freeze_all_except(
             self.F_a, self.F_b, self.F_a2b, self.F_b2a, self.G_a, self.G_b
         )
 
         for step, (a_batch, b_batch, idx) in enumerate(dataloader):
+            # a) minimize reconstruction loss
             _, _, _, _, m_a2b, m_b2a, a_hat, b_hat = self(a_batch, b_batch)
             l_rec_a = F.mse_loss(a_hat, a_batch)
             l_rec_b = F.mse_loss(b_hat, b_batch)
             reconstruction_loss = l_rec_a + l_rec_b
-            disentangle_loss, norm_disent_loss = self.disent_loss(
-                disent_start,
-                c_disent,
-                epoch,
-                a_batch,
-                b_batch,
-                m_a2b,
-                m_b2a,
-            )
-            pass2_loss = reconstruction_loss + disentangle_loss
+
             optimizer.zero_grad()
-            pass2_loss.backward()
+            reconstruction_loss.backward()
             optimizer.step()
 
+            # b) minimize disentangling loss
+            if epoch >= disent_start:
+                _, _, _, _, m_a2b, m_b2a, a_hat, b_hat = self(a_batch, b_batch)
+                disentangle_loss, norm_disent_loss = self.disent_loss(
+                    disent_start,
+                    c_disent,
+                    epoch,
+                    a_batch,
+                    b_batch,
+                    m_a2b,
+                    m_b2a,
+                )
+
+                optimizer.zero_grad()
+                disentangle_loss.backward()
+                optimizer.step()
+
+                cumul_disent_loss += 1 / n_batches * norm_disent_loss
             cumul_l_rec_a += 1 / n_batches * l_rec_a
             cumul_l_rec_b += 1 / n_batches * l_rec_b
-            cumul_disent_loss += 1 / n_batches * norm_disent_loss
             del _, a_batch, b_batch, m_a2b, m_b2a, a_hat, b_hat
             torch.cuda.empty_cache()
         return cumul_msr_loss, cumul_l_rec_a, cumul_l_rec_b, cumul_disent_loss
