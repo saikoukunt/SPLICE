@@ -500,17 +500,16 @@ class SPLICE(SPLICECore):
         optimizer,
         epoch,
     ):
+        self.train()
         cumul_msr_loss = torch.Tensor([0]).to(device)
         cumul_l_rec_a = torch.Tensor([0]).to(device)
         cumul_l_rec_b = torch.Tensor([0]).to(device)
         cumul_disent_loss = torch.Tensor([0]).to(device)
 
-        self.freeze_all_except(self.M_a2b, self.M_b2a)
-        # Pass 1) train measurement networks
+        # cold restart measurement networks periodically to avoid local minima
         if (epoch >= disent_start) and not (
             self.n_private_a == 0 and self.n_private_b == 0
         ):
-            # cold restart measurement networks periodically to avoid local minima
             if (epoch % msr_restart == 0) or (epoch == disent_start):
                 msr_params = self.restart_measurement_networks(device)
                 self.msr_optimizer = torch.optim.AdamW(
@@ -520,29 +519,26 @@ class SPLICE(SPLICECore):
             else:
                 msr_iter = msr_iter_normal
 
-            for i in range(msr_iter):
-                for step, (a_batch, b_batch, idx) in enumerate(dataloader):
+        for step, (a_batch, b_batch, idx) in enumerate(dataloader):
+            # Step 1) minimize measurement loss
+            if epoch >= disent_start:
+                self.freeze_all_except(self.M_a2b, self.M_b2a)
+                for i in range(msr_iter):
                     _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
                     measurement_loss, norm_msr_loss = self.msr_loss(
                         a_batch, b_batch, m_a2b, m_b2a
                     )
                     self.msr_optimizer.zero_grad()
-                    measurement_loss.backward()
+                    norm_msr_loss.backward()
                     self.msr_optimizer.step()
 
-                    if i == msr_iter - 1:
-                        cumul_msr_loss += 1 / n_batches * norm_msr_loss
-                    del a_batch, b_batch, m_a2b, m_b2a
-                    torch.cuda.empty_cache()
+                cumul_msr_loss += 1 / n_batches * norm_msr_loss
+            torch.cuda.empty_cache()
 
-        # Pass 2) train encoders and decoders
-        torch.cuda.empty_cache()
-        self.freeze_all_except(
-            self.F_a, self.F_b, self.F_a2b, self.F_b2a, self.G_a, self.G_b
-        )
-
-        for step, (a_batch, b_batch, idx) in enumerate(dataloader):
-            # a) minimize reconstruction loss
+            # Step 2) minimize reconstruction loss
+            self.freeze_all_except(
+                self.F_a, self.F_b, self.F_a2b, self.F_b2a, self.G_a, self.G_b
+            )
             _, _, _, _, m_a2b, m_b2a, a_hat, b_hat = self(a_batch, b_batch)
             l_rec_a = F.mse_loss(a_hat, a_batch)
             l_rec_b = F.mse_loss(b_hat, b_batch)
@@ -552,9 +548,13 @@ class SPLICE(SPLICECore):
             reconstruction_loss.backward()
             optimizer.step()
 
-            # b) minimize disentangling loss
+            cumul_l_rec_a += 1 / n_batches * l_rec_a
+            cumul_l_rec_b += 1 / n_batches * l_rec_b
+            torch.cuda.empty_cache()
+
+            # Step 3) minimize disentangling loss
             if epoch >= disent_start:
-                _, _, _, _, m_a2b, m_b2a, a_hat, b_hat = self(a_batch, b_batch)
+                _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
                 disentangle_loss, norm_disent_loss = self.disent_loss(
                     disent_start,
                     c_disent,
@@ -566,16 +566,14 @@ class SPLICE(SPLICECore):
                 )
 
                 optimizer.zero_grad()
-                disentangle_loss.backward()
+                norm_disent_loss.backward()
                 optimizer.step()
 
                 cumul_disent_loss += 1 / n_batches * norm_disent_loss
-            cumul_l_rec_a += 1 / n_batches * l_rec_a
-            cumul_l_rec_b += 1 / n_batches * l_rec_b
-            del _, a_batch, b_batch, m_a2b, m_b2a, a_hat, b_hat
             torch.cuda.empty_cache()
         return cumul_msr_loss, cumul_l_rec_a, cumul_l_rec_b, cumul_disent_loss
 
+    # TODO: makes this match the normal train_one_epoch
     def train_one_isomap_epoch(
         self,
         dataloader,
@@ -640,7 +638,7 @@ class SPLICE(SPLICECore):
                     del a_batch, b_batch, m_a2b, m_b2a
                     torch.cuda.empty_cache()
 
-            # Pass 2) train encoders and decoders
+        # Pass 2) train encoders and decoders
         torch.cuda.empty_cache()
         self.freeze_all_except(
             self.F_a, self.F_b, self.F_a2b, self.F_b2a, self.G_a, self.G_b
@@ -758,27 +756,23 @@ class SPLICE(SPLICECore):
 
     def msr_loss(self, a_batch, b_batch, m_a2b, m_b2a):
         """
-                Calculate the normalized loss for measurement networks.
+        Calculate the normalized loss for measurement networks.
 
-                Normalized loss is obtained by dividing the mean squared error by the sum of the
-                variance of the target data and multiplying by the number of features. The
-                resulting loss will be between 0 and 1 for each view.
+        Normalized loss is obtained by dividing the mean squared error by the sum of the
+        variance of the target data and multiplying by the number of features. The
+        resulting loss will be between 0 and 1 for each view.
 
-                Args:
-                    a_batch (torch.Tensor): Data for view A.
-                    b_batch (torch.Tensor): Data for view B.
-                    m_a2b (torch.Tensor): Measurement network prediction of view B.
-                    m_b2a (torch.Tensor): Measurement network prediction of view A.
+        Args:
+            a_batch (torch.Tensor): Data for view A.
+            b_batch (torch.Tensor): Data for view B.
+            m_a2b (torch.Tensor): Measurement network prediction of view B.
+            m_b2a (torch.Tensor): Measurement network prediction of view A.
 
-                Returns:
-        <<<<<<< HEAD
-                    measurement_loss (torch.Tensor): Raw measurement loss.
-                    norm_msr_loss (torch.Tensor): Normalized measurement loss. This will be
-                        between 0 and 2 is both views have private dimensionality > 0, and
-                        between 0 and 1 if only one view does.
-        =======
-                    measurement_loss (torch.Tensor): Normalized measurement loss.
-        >>>>>>> 4a049f28d6fc17044fd307295fe58e00fcf14643
+        Returns:
+            measurement_loss (torch.Tensor): Raw measurement loss.
+            norm_msr_loss (torch.Tensor): Normalized measurement loss. This will be
+                between 0 and 2 is both views have private dimensionality > 0, and
+                between 0 and 1 if only one view does.
         """
         # reshape to 2D if necessary
         if len(a_batch.shape) != 2:
@@ -831,17 +825,17 @@ class SPLICE(SPLICECore):
             b_batch = b_batch.reshape(-1, self.n_b)
 
             l_disent_a = (
-                ((m_a2b - b_batch.mean(dim=0)) ** 2).mean()
+                m_a2b.var(dim=0).sum()
                 if m_a2b is not None
                 else torch.Tensor([0]).to(self.device)
             )
             l_disent_b = (
-                ((m_b2a - a_batch.mean(dim=0)) ** 2).mean()
+                m_b2a.var(dim=0).sum()
                 if m_b2a is not None
                 else torch.Tensor([0]).to(self.device)
             )
-            norm_disent_a = l_disent_a / b_batch.var(dim=0).mean()
-            norm_disent_b = l_disent_b / a_batch.var(dim=0).mean()
+            norm_disent_a = l_disent_a / b_batch.var(dim=0).sum()
+            norm_disent_b = l_disent_b / a_batch.var(dim=0).sum()
         else:
             l_disent_a = torch.Tensor([0]).to(self.device)
             l_disent_b = torch.Tensor([0]).to(self.device)
