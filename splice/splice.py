@@ -519,11 +519,10 @@ class SPLICE(SPLICECore):
             else:
                 msr_iter = msr_iter_normal
 
-        for step, (a_batch, b_batch, idx) in enumerate(dataloader):
-            # Step 1) minimize measurement loss
-            if epoch >= disent_start:
-                self.freeze_all_except(self.M_a2b, self.M_b2a)
-                for i in range(msr_iter):
+            self.freeze_all_except(self.M_a2b, self.M_b2a)
+            for i in range(msr_iter):
+                for step, (a_batch, b_batch, idx) in enumerate(dataloader):
+                    # Step 1) minimize measurement loss
                     _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
                     measurement_loss, norm_msr_loss = self.msr_loss(
                         a_batch, b_batch, m_a2b, m_b2a
@@ -532,13 +531,15 @@ class SPLICE(SPLICECore):
                     norm_msr_loss.backward()
                     self.msr_optimizer.step()
 
-                cumul_msr_loss += 1 / n_batches * norm_msr_loss
+                    if i == msr_iter - 1:
+                        cumul_msr_loss += 1 / n_batches * norm_msr_loss
             torch.cuda.empty_cache()
 
+        self.freeze_all_except(
+            self.F_a, self.F_b, self.F_a2b, self.F_b2a, self.G_a, self.G_b
+        )
+        for step, (a_batch, b_batch, idx) in enumerate(dataloader):
             # Step 2) minimize reconstruction loss
-            self.freeze_all_except(
-                self.F_a, self.F_b, self.F_a2b, self.F_b2a, self.G_a, self.G_b
-            )
             _, _, _, _, m_a2b, m_b2a, a_hat, b_hat = self(a_batch, b_batch)
             l_rec_a = F.mse_loss(a_hat, a_batch)
             l_rec_b = F.mse_loss(b_hat, b_batch)
@@ -826,11 +827,13 @@ class SPLICE(SPLICECore):
 
             l_disent_a = (
                 m_a2b.var(dim=0).sum()
+                # (m_a2b - b_batch.mean(dim=0)).var(dim=0).sum()
                 if m_a2b is not None
                 else torch.Tensor([0]).to(self.device)
             )
             l_disent_b = (
                 m_b2a.var(dim=0).sum()
+                # (m_b2a - a_batch.mean(dim=0)).var(dim=0).sum()
                 if m_b2a is not None
                 else torch.Tensor([0]).to(self.device)
             )

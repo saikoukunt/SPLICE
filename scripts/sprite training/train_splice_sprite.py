@@ -26,10 +26,8 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if args["angle"] == "shared":
-        # train = np.load("../../data/sprites/single-pose_shared-angle_train.npz")
-        # test = np.load("../../data/sprites/single-pose_shared-angle_test.npz")
-        train = np.load("../../data/sprites/single_pose_train.npz")
-        test = np.load("../../data/sprites/single_pose_test.npz")
+        train = np.load("../../data/sprites/single-pose_shared-angle_train.npz")
+        test = np.load("../../data/sprites/single-pose_shared-angle_test.npz")
         filepath = os.path.join(
             "..", "..", "results", "models", "sprites", "splice_sprites_shared-angle.pt"
         )
@@ -99,8 +97,6 @@ if __name__ == "__main__":
         size=(256, 4, 4),
     ).to(device)
 
-    # model.load_state_dict(torch.load(filepath))
-
     model.fit(
         A_train,
         B_train,
@@ -111,13 +107,13 @@ if __name__ == "__main__":
         lr=1e-4,
         epochs=5000,
         end_factor=1,
-        disent_start=250,
+        disent_start=50,
         msr_iter_restart=50,
         msr_iter_normal=7,
         c_disent=1,
         device=device,
-        weight_decay=1e-3,
-        msr_weight_decay=1e-3,
+        weight_decay=1e-3,  # type: ignore
+        msr_weight_decay=1e-3,  # type: ignore
         checkpoint_freq=10,
         msr_restart=50000,
     )
