@@ -338,7 +338,11 @@ class SPLICE(SPLICECore):
                 )
 
                 validation_loss = val_reconstruction_loss_a + val_reconstruction_loss_b
-                if (validation_loss < best_loss) and (epoch >= disent_start):
+                if (
+                    (validation_loss < best_loss)
+                    and (epoch >= disent_start)
+                    and (model_filepath is not None)
+                ):
                     best_loss = validation_loss
                     torch.save(self.state_dict(), model_filepath)
                     tqdm.write("saving new best model")
@@ -351,9 +355,12 @@ class SPLICE(SPLICECore):
         b_validation,
         model_filepath,
         fix_index=None,
-        n_neighbors=100,
+        n_neighbors_shared_a=100,
+        n_neighbors_private_a=100,
+        n_neighbors_shared_b=100,
+        n_neighbors_private_b=100,
         n_landmarks=100,
-        c_prox=50.0,
+        c_prox=0.1,
         batch_size=None,
         epochs=25000,
         lr=1e-3,
@@ -381,7 +388,15 @@ class SPLICE(SPLICECore):
             a_shared_dists,
             b_shared_dists,
         ) = self.calc_isomap_dists(
-            a_train, b_train, fix_index, n_neighbors, n_landmarks, device
+            a_train,
+            b_train,
+            fix_index,
+            n_neighbors_shared_a,
+            n_neighbors_private_a,
+            n_neighbors_shared_b,
+            n_neighbors_private_b,
+            n_landmarks,
+            device,
         )
 
         # train model
@@ -472,7 +487,11 @@ class SPLICE(SPLICECore):
                     + cumul_prox_shared_a
                     + cumul_prox_shared_b
                 )
-                if (validation_loss < best_loss) and (epoch >= disent_start):
+                if (
+                    (validation_loss < best_loss)
+                    and (epoch >= disent_start)
+                    and (model_filepath is not None)
+                ):
                     best_loss = validation_loss
                     torch.save(self.state_dict(), model_filepath)
                     tqdm.write("saving new best model")
@@ -492,16 +511,16 @@ class SPLICE(SPLICECore):
         optimizer,
         epoch,
     ):
+        self.train()
         cumul_msr_loss = torch.Tensor([0]).to(device)
         cumul_l_rec_a = torch.Tensor([0]).to(device)
         cumul_l_rec_b = torch.Tensor([0]).to(device)
         cumul_disent_loss = torch.Tensor([0]).to(device)
 
-        # Pass 1) train measurement networks
+        # cold restart measurement networks periodically to avoid local minima
         if (epoch >= disent_start) and not (
             self.n_private_a == 0 and self.n_private_b == 0
         ):
-            # cold restart measurement networks periodically to avoid local minima
             if (epoch % msr_restart == 0) or (epoch == disent_start):
                 msr_params = self.restart_measurement_networks(device)
                 self.msr_optimizer = torch.optim.AdamW(
@@ -512,51 +531,57 @@ class SPLICE(SPLICECore):
                 msr_iter = msr_iter_normal
 
             self.freeze_all_except(self.M_a2b, self.M_b2a)
-
             for i in range(msr_iter):
                 for step, (a_batch, b_batch, idx) in enumerate(dataloader):
+                    # Step 1) minimize measurement loss
                     _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
                     measurement_loss, norm_msr_loss = self.msr_loss(
                         a_batch, b_batch, m_a2b, m_b2a
                     )
                     self.msr_optimizer.zero_grad()
-                    measurement_loss.backward()
+                    norm_msr_loss.backward()
                     self.msr_optimizer.step()
 
                     if i == msr_iter - 1:
                         cumul_msr_loss += 1 / n_batches * norm_msr_loss
-                    del a_batch, b_batch, m_a2b, m_b2a
-                    torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
 
-            # Pass 2) train encoders and decoders
-        torch.cuda.empty_cache()
         self.freeze_all_except(
             self.F_a, self.F_b, self.F_a2b, self.F_b2a, self.G_a, self.G_b
         )
-
         for step, (a_batch, b_batch, idx) in enumerate(dataloader):
+            # Step 2) minimize reconstruction loss
             _, _, _, _, m_a2b, m_b2a, a_hat, b_hat = self(a_batch, b_batch)
             l_rec_a = F.mse_loss(a_hat, a_batch)
             l_rec_b = F.mse_loss(b_hat, b_batch)
             reconstruction_loss = l_rec_a + l_rec_b
-            disentangle_loss, norm_disent_loss = self.disent_loss(
-                disent_start,
-                c_disent,
-                epoch,
-                a_batch,
-                b_batch,
-                m_a2b,
-                m_b2a,
-            )
-            pass2_loss = reconstruction_loss + disentangle_loss
+
             optimizer.zero_grad()
-            pass2_loss.backward()
+            reconstruction_loss.backward()
             optimizer.step()
 
             cumul_l_rec_a += 1 / n_batches * l_rec_a
             cumul_l_rec_b += 1 / n_batches * l_rec_b
-            cumul_disent_loss += 1 / n_batches * norm_disent_loss
-            del _, a_batch, b_batch, m_a2b, m_b2a, a_hat, b_hat
+            torch.cuda.empty_cache()
+
+            # Step 3) minimize disentangling loss
+            if epoch >= disent_start:
+                _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
+                disentangle_loss, norm_disent_loss = self.disent_loss(
+                    disent_start,
+                    c_disent,
+                    epoch,
+                    a_batch,
+                    b_batch,
+                    m_a2b,
+                    m_b2a,
+                )
+
+                optimizer.zero_grad()
+                norm_disent_loss.backward()
+                optimizer.step()
+
+                cumul_disent_loss += 1 / n_batches * norm_disent_loss
             torch.cuda.empty_cache()
         return cumul_msr_loss, cumul_l_rec_a, cumul_l_rec_b, cumul_disent_loss
 
@@ -608,7 +633,6 @@ class SPLICE(SPLICECore):
                 msr_iter = msr_iter_normal
 
             self.freeze_all_except(self.M_a2b, self.M_b2a)
-
             for i in range(msr_iter):
                 for step, (a_batch, b_batch, idx) in enumerate(dataloader):
                     _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
@@ -616,21 +640,20 @@ class SPLICE(SPLICECore):
                         a_batch, b_batch, m_a2b, m_b2a
                     )
                     self.msr_optimizer.zero_grad()
-                    measurement_loss.backward()
+                    norm_msr_loss.backward()
                     self.msr_optimizer.step()
 
                     if i == msr_iter - 1:
                         cumul_msr_loss += 1 / n_batches * norm_msr_loss
                     del a_batch, b_batch, m_a2b, m_b2a
-                    torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
 
-            # Pass 2) train encoders and decoders
-        torch.cuda.empty_cache()
         self.freeze_all_except(
             self.F_a, self.F_b, self.F_a2b, self.F_b2a, self.G_a, self.G_b
         )
 
         for step, (a_batch, b_batch, idx) in enumerate(dataloader):
+            # Step 2) minimize reconstruction loss
             z_a, z_b2a, z_a2b, z_b, m_a2b, m_b2a, a_hat, b_hat = self(a_batch, b_batch)
             zl_a, zl_b2a, zl_a2b, zl_b = self.encode(a_landmarks, b_landmarks)
 
@@ -672,34 +695,40 @@ class SPLICE(SPLICECore):
             prox_loss = c_prox * (
                 prox_private_a + prox_private_b + prox_shared_a + prox_shared_b
             )
-            disentangle_loss, norm_disent_loss = self.disent_loss(
-                disent_start,
-                c_disent,
-                epoch,
-                a_batch,
-                b_batch,
-                m_a2b,
-                m_b2a,
-            )
-            pass2_loss = (
-                pass2_coeff * reconstruction_loss
-                + pass2_coeff * disentangle_loss
-                + prox_loss
-            )
+            pass2_loss = pass2_coeff * reconstruction_loss + pass2_coeff * prox_loss
+
             optimizer.zero_grad()
             pass2_loss.backward()
             optimizer.step()
 
             cumul_l_rec_a += 1 / n_batches * mse_rec_a
             cumul_l_rec_b += 1 / n_batches * mse_rec_b
-            cumul_disent_loss += 1 / n_batches * norm_disent_loss
             cumul_prox_private_a += 1 / n_batches * prox_private_a
             cumul_prox_private_b += 1 / n_batches * prox_private_b
             cumul_prox_shared_a += 1 / n_batches * prox_shared_a
             cumul_prox_shared_b += 1 / n_batches * prox_shared_b
-            del a_batch, b_batch, z_a, z_b2a, z_a2b, z_b, m_a2b, m_b2a, a_hat, b_hat
-            del zl_a, zl_b2a, zl_a2b, zl_b
             torch.cuda.empty_cache()
+
+            # Step 3) minimize disentangling loss
+            if epoch >= disent_start:
+                _, _, _, _, m_a2b, m_b2a = self.measure(a_batch, b_batch)
+                disentangle_loss, norm_disent_loss = self.disent_loss(
+                    disent_start,
+                    c_disent,
+                    epoch,
+                    a_batch,
+                    b_batch,
+                    m_a2b,
+                    m_b2a,
+                )
+
+                optimizer.zero_grad()
+                norm_disent_loss.backward()
+                optimizer.step()
+
+                cumul_disent_loss += 1 / n_batches * norm_disent_loss
+                torch.cuda.empty_cache()
+
         return (
             cumul_msr_loss,
             cumul_l_rec_a,
@@ -742,27 +771,23 @@ class SPLICE(SPLICECore):
 
     def msr_loss(self, a_batch, b_batch, m_a2b, m_b2a):
         """
-                Calculate the normalized loss for measurement networks.
+        Calculate the normalized loss for measurement networks.
 
-                Normalized loss is obtained by dividing the mean squared error by the sum of the
-                variance of the target data and multiplying by the number of features. The
-                resulting loss will be between 0 and 1 for each view.
+        Normalized loss is obtained by dividing the mean squared error by the sum of the
+        variance of the target data and multiplying by the number of features. The
+        resulting loss will be between 0 and 1 for each view.
 
-                Args:
-                    a_batch (torch.Tensor): Data for view A.
-                    b_batch (torch.Tensor): Data for view B.
-                    m_a2b (torch.Tensor): Measurement network prediction of view B.
-                    m_b2a (torch.Tensor): Measurement network prediction of view A.
+        Args:
+            a_batch (torch.Tensor): Data for view A.
+            b_batch (torch.Tensor): Data for view B.
+            m_a2b (torch.Tensor): Measurement network prediction of view B.
+            m_b2a (torch.Tensor): Measurement network prediction of view A.
 
-                Returns:
-        <<<<<<< HEAD
-                    measurement_loss (torch.Tensor): Raw measurement loss.
-                    norm_msr_loss (torch.Tensor): Normalized measurement loss. This will be
-                        between 0 and 2 is both views have private dimensionality > 0, and
-                        between 0 and 1 if only one view does.
-        =======
-                    measurement_loss (torch.Tensor): Normalized measurement loss.
-        >>>>>>> 4a049f28d6fc17044fd307295fe58e00fcf14643
+        Returns:
+            measurement_loss (torch.Tensor): Raw measurement loss.
+            norm_msr_loss (torch.Tensor): Normalized measurement loss. This will be
+                between 0 and 2 is both views have private dimensionality > 0, and
+                between 0 and 1 if only one view does.
         """
         # reshape to 2D if necessary
         if len(a_batch.shape) != 2:
@@ -815,17 +840,19 @@ class SPLICE(SPLICECore):
             b_batch = b_batch.reshape(-1, self.n_b)
 
             l_disent_a = (
-                ((m_a2b - b_batch.mean(dim=0)) ** 2).mean()
+                m_a2b.var(dim=0).sum()
+                # (m_a2b - b_batch.mean(dim=0)).var(dim=0).sum()
                 if m_a2b is not None
                 else torch.Tensor([0]).to(self.device)
             )
             l_disent_b = (
-                ((m_b2a - a_batch.mean(dim=0)) ** 2).mean()
+                m_b2a.var(dim=0).sum()
+                # (m_b2a - a_batch.mean(dim=0)).var(dim=0).sum()
                 if m_b2a is not None
                 else torch.Tensor([0]).to(self.device)
             )
-            norm_disent_a = l_disent_a / b_batch.var(dim=0).mean()
-            norm_disent_b = l_disent_b / a_batch.var(dim=0).mean()
+            norm_disent_a = l_disent_a / b_batch.var(dim=0).sum()
+            norm_disent_b = l_disent_b / a_batch.var(dim=0).sum()
         else:
             l_disent_a = torch.Tensor([0]).to(self.device)
             l_disent_b = torch.Tensor([0]).to(self.device)
@@ -836,7 +863,16 @@ class SPLICE(SPLICECore):
         return disentangle_loss, norm_disent_a + norm_disent_b
 
     def calc_isomap_dists(
-        self, a_train, b_train, fix_index, n_neighbors, n_landmarks, device
+        self,
+        a_train,
+        b_train,
+        fix_index,
+        n_neighbors_shared_a,
+        n_neighbors_private_a,
+        n_neighbors_shared_b,
+        n_neighbors_private_b,
+        n_landmarks,
+        device,
     ):
         tqdm.write("Projecting onto submanifolds")
         a_shared_subm, b_shared_subm, a_private_subm, b_private_subm = (
@@ -849,25 +885,36 @@ class SPLICE(SPLICECore):
         b_landmarks = b_train[landmark_inds]
 
         a_private_dists = (
-            calculate_isomap_dists(a_private_subm, n_neighbors, landmark_inds).to(
-                device
-            )
+            calculate_isomap_dists(
+                a_private_subm, n_neighbors_private_a, landmark_inds
+            ).to(device)
             if self.n_private_a > 0
             else None
         )
         b_private_dists = (
-            calculate_isomap_dists(b_private_subm, n_neighbors, landmark_inds).to(
-                device
-            )
+            calculate_isomap_dists(
+                b_private_subm, n_neighbors_private_b, landmark_inds
+            ).to(device)
             if self.n_private_b > 0
             else None
         )
         a_shared_dists = calculate_isomap_dists(
-            a_shared_subm, n_neighbors, landmark_inds
+            a_shared_subm, n_neighbors_shared_a, landmark_inds
         ).to(device)
         b_shared_dists = calculate_isomap_dists(
-            b_shared_subm, n_neighbors, landmark_inds
+            b_shared_subm, n_neighbors_shared_b, landmark_inds
         ).to(device)
+
+        if (a_private_dists is not None and a_private_dists.isnan().any()) or (
+            b_private_dists is not None and b_private_dists.isnan().any()
+        ):
+            raise ValueError(
+                "NaN values in private distances, try increasing n_neighbors_private"
+            )
+        elif a_shared_dists.isnan().any() or b_shared_dists.isnan().any():
+            raise ValueError(
+                "NaN values in shared distances, try increasing n_neighbors_shared"
+            )
 
         return (
             a_landmarks,

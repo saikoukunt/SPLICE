@@ -23,6 +23,18 @@ class PairedViewDataset(Dataset):
         return self.dataset_a[idx], self.dataset_b[idx], idx
 
 
+class MultiViewDataset(Dataset):
+    def __init__(self, datasets):
+        self.datasets = datasets
+
+    def __len__(self):
+        return self.datasets[0].shape[0]
+
+    def __getitem__(self, idx):
+        sample = [self.datasets[i][idx] for i in range(len(self.datasets))]
+        return sample, idx
+
+
 def update_G(x_a, x_b, model, batch_size):
     with torch.no_grad():
         a_hat, b_hat, z_a, z_b = model(x_a, x_b)
