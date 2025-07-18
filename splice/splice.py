@@ -860,7 +860,7 @@ class SPLICE(SPLICECore):
             norm_disent_b = torch.Tensor([0]).to(self.device)
 
         disentangle_loss = c_disent * (l_disent_a + l_disent_b)
-        return disentangle_loss, norm_disent_a + norm_disent_b
+        return disentangle_loss, c_disent * (norm_disent_a + norm_disent_b)
 
     def calc_isomap_dists(
         self,
