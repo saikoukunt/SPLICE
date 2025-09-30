@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+import scipy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -387,6 +388,7 @@ class SPLICE(SPLICECore):
             b_private_dists,
             a_shared_dists,
             b_shared_dists,
+            landmark_inds,
         ) = self.calc_isomap_dists(
             a_train,
             b_train,
@@ -398,6 +400,8 @@ class SPLICE(SPLICECore):
             n_landmarks,
             device,
         )
+
+        d_geo = np.zeros((10, 1))
 
         # train model
         dataset = PairedViewDataset(a_train, b_train)
@@ -923,6 +927,7 @@ class SPLICE(SPLICECore):
             b_private_dists,
             a_shared_dists,
             b_shared_dists,
+            landmark_inds,
         )
 
     def iso_loss_func(

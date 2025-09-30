@@ -1,18 +1,19 @@
 import sys
+
 import numpy as np
 import torch.utils
 
 sys.path.append(".")
 sys.path.append("..")
 
-import torch
 import model
+import torch
 import train
 import utils
+from scipy.ndimage import rotate
 
 # import evaluate
 from sklearn.datasets import fetch_openml
-from scipy.ndimage import rotate
 
 
 def main(args):
@@ -42,36 +43,6 @@ def main(args):
     beta = 1
     _lambda = 100
 
-    # Encoder and decoder network
-    ae_model = model.CNNDAE(z_dim, c_dim, channels=1).to(device)
-    # View1 independence regularization network
-    # mmcca1 = model.MMDCCA(args.z_dim, args.c_dim,
-    #         [args.phi_hidden_size]*args.phi_num_layers,
-    #         [args.tau_hidden_size]*args.tau_num_layers).to(device)
-    # View2 independence regularization network
-    mmcca2 = model.MMDCCA(
-        z_dim,
-        c_dim[1],
-        [phi_hidden_size] * phi_num_layers,
-        [tau_hidden_size] * tau_num_layers,
-    ).to(device)
-
-    optimizer = torch.optim.Adam(
-        [
-            {
-                "params": mmcca2.parameters(),
-                "lr": lr_max,
-                "weight_decay": mmcca_decay,
-            },
-            {
-                "params": ae_model.parameters(),
-                "lr": lr_min,
-                "weight_decay": weight_decay,
-            },
-        ],
-        lr=lr_min,
-    )
-
     # Load data
     # print("Generating data ...")
     # mnist, mnist_labels = fetch_openml(
@@ -88,62 +59,92 @@ def main(args):
     # X = torch.Tensor(X).reshape(-1, 1, 28, 28) / 255
     # Y = torch.Tensor(Y).reshape(-1, 1, 28, 28) / 255
 
-    data = np.load(
-        "/cis/home/skoukun1/projects/SPLICE/data/mnist/mnist_rotated_360.npz"
-    )
+    data = np.load("../data/mnist/mnist_rotated_shared-digit.npz")
 
     X = torch.Tensor(data["original"][:50000]).to(device).reshape(-1, 1, 28, 28)
     Y = torch.Tensor(data["rotated"][:50000]).to(device).reshape(-1, 1, 28, 28)
 
     dataset = utils.ViewDataset(X[:50000], Y[:50000])
-    train_loader_b1 = torch.utils.data.DataLoader(
-        dataset=dataset, batch_size=batch_size1, shuffle=True
-    )
-    eval_loader = torch.utils.data.DataLoader(
-        dataset=dataset, batch_size=batch_size2, shuffle=False
-    )
-    train_loader_b2 = torch.utils.data.DataLoader(
-        dataset=dataset, batch_size=batch_size2, shuffle=True
-    )
-    corr_iter = iter(train_loader_b2)
 
-    # Start training
-    best_obj = float("inf")
-    model_file_name = "lyu_mnist_model.pth"
+    for id in range(4):
+        # Encoder and decoder network
+        ae_model = model.CNNDAE(z_dim, c_dim, channels=1).to(device)
+        # View1 independence regularization network
+        # mmcca1 = model.MMDCCA(args.z_dim, args.c_dim,
+        #         [args.phi_hidden_size]*args.phi_num_layers,
+        #         [args.tau_hidden_size]*args.tau_num_layers).to(device)
+        # View2 independence regularization network
+        mmcca2 = model.MMDCCA(
+            z_dim,
+            c_dim[1],
+            [phi_hidden_size] * phi_num_layers,
+            [tau_hidden_size] * tau_num_layers,
+        ).to(device)
 
-    print("Start training ...")
-    for itr in range(1, num_iters + 1):
+        optimizer = torch.optim.Adam(
+            [
+                {
+                    "params": mmcca2.parameters(),
+                    "lr": lr_max,
+                    "weight_decay": mmcca_decay,
+                },
+                {
+                    "params": ae_model.parameters(),
+                    "lr": lr_min,
+                    "weight_decay": weight_decay,
+                },
+            ],
+            lr=lr_min,
+        )
 
-        # Solve the U subproblem
-        U = train.update_U(ae_model, eval_loader, z_dim, device)
+        train_loader_b1 = torch.utils.data.DataLoader(
+            dataset=dataset, batch_size=batch_size1, shuffle=True
+        )
+        eval_loader = torch.utils.data.DataLoader(
+            dataset=dataset, batch_size=batch_size2, shuffle=False
+        )
+        train_loader_b2 = torch.utils.data.DataLoader(
+            dataset=dataset, batch_size=batch_size2, shuffle=True
+        )
+        corr_iter = iter(train_loader_b2)
 
-        # Update network theta and eta for multiple epochs
-        for _ in range(inner_epochs):
+        # Start training
+        best_obj = float("inf")
+        model_file_name = "lyu_mnist_model_id%d.pth" % id
 
-            # Backprop to update
-            corr_iter = train.train(
-                ae_model,
-                mmcca2,
-                U,
-                train_loader_b1,
-                train_loader_b2,
-                corr_iter,
-                beta,
-                _lambda,
-                optimizer,
-                device,
-            )
+        print("Start training ...")
+        for itr in range(1, num_iters + 1):
 
-            # Evaluate on the whole set
-            match_err, recons_err, corr = train.eval_train(
-                ae_model, mmcca2, itr, U, eval_loader, beta, _lambda, device
-            )
+            # Solve the U subproblem
+            U = train.update_U(ae_model, eval_loader, z_dim, device)
 
-            # Save the model
-            if match_err + beta * recons_err + _lambda * corr < best_obj:
-                print("Saving Model")
-                torch.save(ae_model.state_dict(), model_file_name)
-                best_obj = match_err + beta * recons_err + _lambda * corr
+            # Update network theta and eta for multiple epochs
+            for _ in range(inner_epochs):
+
+                # Backprop to update
+                corr_iter = train.train(
+                    ae_model,
+                    mmcca2,
+                    U,
+                    train_loader_b1,
+                    train_loader_b2,
+                    corr_iter,
+                    beta,
+                    _lambda,
+                    optimizer,
+                    device,
+                )
+
+                # Evaluate on the whole set
+                match_err, recons_err, corr = train.eval_train(
+                    ae_model, mmcca2, itr, U, eval_loader, beta, _lambda, device
+                )
+
+                # Save the model
+                if match_err + beta * recons_err + _lambda * corr < best_obj:
+                    print("Saving Model")
+                    torch.save(ae_model.state_dict(), model_file_name)
+                    best_obj = match_err + beta * recons_err + _lambda * corr
 
 
 def rot_digit(m, restricted_rotations=True):

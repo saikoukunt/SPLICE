@@ -265,6 +265,12 @@ def generate_sim(sampling="grid", mixing="linear", num_samples=18900, train_size
         case "linear":
             lgn_resp = lgn_shared_resp + lgn_priv_resp
             v1_resp = v1_shared_resp + v1_priv_resp
+        case "shared":
+            lgn_resp = lgn_shared_resp
+            v1_resp = v1_shared_resp
+        case "private":
+            lgn_resp = lgn_priv_resp
+            v1_resp = v1_priv_resp
         case _:
             raise ValueError(
                 "Invalid mixing method. Usage: python generate_lgn_v1.py <file_desc> <sampling>"
@@ -330,26 +336,34 @@ if __name__ == "__main__":
     sampling = sys.argv[2] if len(sys.argv) >= 3 else "grid"
     num_samples = int(sys.argv[3]) if len(sys.argv) >= 4 else 18900
 
-    train, test, field_params = generate_sim(sampling=sampling, num_samples=num_samples)
+    train, test, field_params = generate_sim(
+        sampling=sampling, num_samples=num_samples, mixing="private"
+    )
 
-    os.makedirs(os.path.join("..", "..", "data", file_desc), exist_ok=True)
+    os.makedirs(os.path.join("..", "..", "data", "lgn-v1", file_desc), exist_ok=True)
     pickle.dump(
         train,
         open(
-            os.path.join("..", "..", "data", file_desc, f"{file_desc}_train.pkl"), "wb"
+            os.path.join(
+                "..", "..", "data", "lgn-v1", file_desc, f"{file_desc}_train.pkl"
+            ),
+            "wb",
         ),
     )
     pickle.dump(
         test,
         open(
-            os.path.join("..", "..", "data", file_desc, f"{file_desc}_test.pkl"), "wb"
+            os.path.join(
+                "..", "..", "data", "lgn-v1", file_desc, f"{file_desc}_test.pkl"
+            ),
+            "wb",
         ),
     )
     pickle.dump(
         field_params,
         open(
             os.path.join(
-                "..", "..", "data", file_desc, f"{file_desc}_field_params.pkl"
+                "..", "..", "data", "lgn-v1", file_desc, f"{file_desc}_field_params.pkl"
             ),
             "wb",
         ),
