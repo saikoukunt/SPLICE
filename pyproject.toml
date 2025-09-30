@@ -1,0 +1,40 @@
+[project]
+name = "splice"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Sai Koukuntla", email = "sai.koukunt@gmail.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "imageio>=2.37.0",
+    "matplotlib>=3.10.6",
+    "pandas>=2.3.3",
+    "scikit-learn>=1.7.2",
+    "scipy>=1.15.3",
+    "torch>=2.8.0",
+    "tqdm>=4.67.1",
+]
+
+[project.scripts]
+splice = "splice:main"
+
+[build-system]
+requires = ["uv_build>=0.8.22,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.30.1",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu126" },
+]
